@@ -1,0 +1,2053 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Process Engine — CPU Scheduling Playground</title>
+    <!-- Load React and ReactDOM -->
+    <script src="https://unpkg.com/react@18/umd/react.development.js" crossorigin></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js" crossorigin></script>
+    <!-- Load Babel to compile JSX in the browser -->
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <!-- Load Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- PDF generation -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js"></script>
+    <style>
+        body {
+            background: #f4f5fb;
+            color: #334155;
+            font-family: 'Inter', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+        }
+        .striped-bg {
+            background-image: linear-gradient(45deg, rgba(148,163,184,0.12) 25%, rgba(148,163,184,0.22) 25%, rgba(148,163,184,0.22) 50%, rgba(148,163,184,0.12) 50%, rgba(148,163,184,0.12) 75%, rgba(148,163,184,0.22) 75%, rgba(148,163,184,0.22) 100%);
+            background-size: 12px 12px;
+        }
+        /* Theme-aware range slider */
+        input[type=range] {
+            -webkit-appearance: none;
+            appearance: none;
+            background: transparent;
+            cursor: pointer;
+        }
+        input[type=range]::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            appearance: none;
+            height: 18px;
+            width: 18px;
+            border-radius: 50%;
+            background: var(--primary, #6366f1);
+            border: 2.5px solid #fff;
+            margin-top: -6px;
+            box-shadow: 0 1px 5px rgba(15, 23, 42, 0.25);
+            transition: transform 0.15s ease;
+        }
+        input[type=range]::-webkit-slider-thumb:hover { transform: scale(1.15); }
+        input[type=range]::-webkit-slider-runnable-track {
+            width: 100%;
+            height: 6px;
+            cursor: pointer;
+            background: #e2e8f0;
+            border-radius: 3px;
+        }
+        input[type=range]::-moz-range-thumb {
+            height: 18px;
+            width: 18px;
+            border-radius: 50%;
+            background: var(--primary, #6366f1);
+            border: 2.5px solid #fff;
+            box-shadow: 0 1px 5px rgba(15, 23, 42, 0.25);
+        }
+        input[type=range]::-moz-range-track {
+            height: 6px;
+            border-radius: 3px;
+            background: #e2e8f0;
+        }
+        input[type=range]:focus-visible {
+            outline: 2px solid var(--primary, #6366f1);
+            outline-offset: 3px;
+            border-radius: 6px;
+        }
+        input[type=number]::-webkit-inner-spin-button,
+        input[type=number]::-webkit-outer-spin-button {
+            -webkit-appearance: none;
+            margin: 0;
+        }
+        input[type=number] { -moz-appearance: textfield; appearance: textfield; }
+        button:focus-visible, a:focus-visible {
+            outline: 2px solid var(--primary, #6366f1);
+            outline-offset: 2px;
+            border-radius: 8px;
+        }
+        ::selection { background: var(--primary, #6366f1); color: #fff; }
+        .slim-scroll::-webkit-scrollbar { width: 6px; height: 6px; }
+        .slim-scroll::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 3px; }
+        .slim-scroll::-webkit-scrollbar-track { background: transparent; }
+    </style>
+</head>
+<body>
+    <div id="root"></div>
+    <script type="text/babel">
+        const { useState, useEffect, useRef, useMemo } = React;
+
+        // ---------------------------------------------------------------
+        //  THEMES — user selectable accent colors
+        // ---------------------------------------------------------------
+        const THEMES = [
+            { name: 'Indigo', color: '#6366f1', glow: 'rgba(99,102,241,0.28)' },
+            { name: 'Violet', color: '#8b5cf6', glow: 'rgba(139,92,246,0.28)' },
+            { name: 'Emerald', color: '#10b981', glow: 'rgba(16,185,129,0.28)' },
+            { name: 'Cyan', color: '#0891b2', glow: 'rgba(8,145,178,0.28)' },
+            { name: 'Amber', color: '#f59e0b', glow: 'rgba(245,158,11,0.28)' },
+            { name: 'Rose', color: '#f43f5e', glow: 'rgba(244,63,94,0.28)' },
+        ];
+
+        const algorithms = [
+            { id: 'fcfs', name: 'FCFS', desc: 'First come, first served', type: 'Non-preemptive', hasQuantum: false, hasPriority: false },
+            { id: 'sjf', name: 'SJF', desc: 'Shortest job first', type: 'Non-preemptive', hasQuantum: false, hasPriority: false },
+            { id: 'srtf', name: 'SRTF', desc: 'Shortest remaining time', type: 'Preemptive', hasQuantum: false, hasPriority: false },
+            { id: 'rr', name: 'Round Robin', desc: 'Everyone gets a slice', type: 'Preemptive', hasQuantum: true, hasPriority: false },
+            { id: 'priority', name: 'Priority', desc: 'Highest priority wins', type: 'Non-preemptive', hasQuantum: false, hasPriority: true },
+        ];
+
+        // Dynamic Comparison Catalog
+        const ALGORITHM_CATALOG = [
+            { key: 'fcfs', algoId: 'fcfs', name: 'FCFS', fullName: 'First Come, First Served', desc: 'Jobs processed in arrival order', type: 'Non-preemptive', hasQuantum: false, hasPriority: false, defaultQuantum: 2, defaultPriorityMode: 'np' },
+            { key: 'sjf', algoId: 'sjf', name: 'SJF', fullName: 'Shortest Job First', desc: 'Non-preemptive shortest job first', type: 'Non-preemptive', hasQuantum: false, hasPriority: false, defaultQuantum: 2, defaultPriorityMode: 'np' },
+            { key: 'srtf', algoId: 'srtf', name: 'SRTF', fullName: 'Shortest Remaining Time', desc: 'Preemptive shortest job first', type: 'Preemptive', hasQuantum: false, hasPriority: false, defaultQuantum: 2, defaultPriorityMode: 'np' },
+            { key: 'rr', algoId: 'rr', name: 'Round Robin', fullName: 'Round Robin', desc: 'Preemptive cyclic time-sliced queue', type: 'Preemptive', hasQuantum: true, hasPriority: false, defaultQuantum: 2, defaultPriorityMode: 'np' },
+            { key: 'priority_np', algoId: 'priority', name: 'Priority (NP)', fullName: 'Priority (Non-preemptive)', desc: 'Higher priority finishes before yielding', type: 'Non-preemptive', hasQuantum: false, hasPriority: true, defaultQuantum: 2, defaultPriorityMode: 'np' },
+            { key: 'priority_p', algoId: 'priority', name: 'Priority (P)', fullName: 'Priority (Preemptive)', desc: 'Higher priority preempts running job', type: 'Preemptive', hasQuantum: false, hasPriority: true, defaultQuantum: 2, defaultPriorityMode: 'p' },
+        ];
+
+        // Comparison quick presets (choose 2, 3, 4, or all)
+        const COMPARISON_PRESETS = [
+            { id: 'p_2_shortest', label: '2: SJF vs SRTF', desc: 'Shortest Job: Non-preemptive vs Preemptive', keys: ['sjf', 'srtf'] },
+            { id: 'p_3_classic', label: '3: FCFS vs SJF vs RR', desc: 'Standard curriculum fundamental three', keys: ['fcfs', 'sjf', 'rr'] },
+            { id: 'p_3_preemptive', label: '3: SRTF vs RR vs Priority (P)', desc: 'Preemptive algorithms showdown', keys: ['srtf', 'rr', 'priority_p'] },
+            { id: 'p_4_standard', label: '4: FCFS, SJF, SRTF, RR', desc: 'Four primary textbook algorithms', keys: ['fcfs', 'sjf', 'srtf', 'rr'] },
+            { id: 'p_all', label: 'All 6 Algorithms', desc: 'Complete comprehensive comparison', keys: ['fcfs', 'sjf', 'srtf', 'rr', 'priority_np', 'priority_p'] },
+        ];
+
+        const QUANTUM_OPTIONS = [1, 2, 3, 4, 5];
+
+        const COLORS = [
+            'bg-blue-500', 'bg-emerald-500', 'bg-violet-500',
+            'bg-amber-500', 'bg-rose-500', 'bg-cyan-500', 'bg-fuchsia-500'
+        ];
+        const COLOR_HEX = ['#3b82f6', '#10b981', '#8b5cf6', '#f59e0b', '#f43f5e', '#0891b2', '#d946ef'];
+
+        // ---------------------------------------------------------------
+        //  SCHEDULER — pure function usable for both the live sim and compare
+        // ---------------------------------------------------------------
+        function runScheduler(algoId, processesIn, quantum, priorityMode) {
+            let time = 0;
+            let gantt = [];
+            let procs = processesIn.map(p => ({ ...p, rt: p.bt, endTime: 0 }));
+            let done = 0;
+
+            const recordGantt = (id, start, end) => gantt.push({ id, start, end });
+
+            if (algoId === 'fcfs') {
+                procs.sort((a, b) => a.at - b.at);
+                procs.forEach(p => {
+                    if (time < p.at) { recordGantt('IDLE', time, p.at); time = p.at; }
+                    recordGantt(p.id, time, time + p.bt);
+                    time += p.bt;
+                    p.endTime = time;
+                });
+            } else if (algoId === 'sjf') {
+                while (done < procs.length) {
+                    let available = procs.filter(p => p.at <= time && p.rt > 0);
+                    if (available.length === 0) { recordGantt('IDLE', time, time + 1); time++; continue; }
+                    available.sort((a, b) => a.bt - b.bt || a.at - b.at);
+                    let p = available[0];
+                    recordGantt(p.id, time, time + p.bt);
+                    time += p.bt;
+                    p.rt = 0;
+                    p.endTime = time;
+                    done++;
+                }
+            } else if (algoId === 'srtf') {
+                let currentP = null;
+                let startT = 0;
+                while (done < procs.length) {
+                    let available = procs.filter(p => p.at <= time && p.rt > 0);
+                    if (available.length === 0) {
+                        if (currentP) { recordGantt(currentP.id, startT, time); currentP = null; }
+                        recordGantt('IDLE', time, time + 1);
+                        time++;
+                        continue;
+                    }
+                    available.sort((a, b) => a.rt - b.rt || a.at - b.at);
+                    let nextP = available[0];
+                    if (currentP !== nextP) {
+                        if (currentP) recordGantt(currentP.id, startT, time);
+                        currentP = nextP;
+                        startT = time;
+                    }
+                    currentP.rt--;
+                    time++;
+                    if (currentP.rt === 0) {
+                        recordGantt(currentP.id, startT, time);
+                        currentP.endTime = time;
+                        currentP = null;
+                        done++;
+                    }
+                }
+            } else if (algoId === 'rr') {
+                let t = 0;
+                let ready = [];
+                let inQueue = new Set();
+                procs.sort((a, b) => a.at - b.at);
+                while (done < procs.length) {
+                    procs.forEach(p => {
+                        if (p.at <= t && p.rt > 0 && !inQueue.has(p.id)) { ready.push(p); inQueue.add(p.id); }
+                    });
+                    if (ready.length === 0) { recordGantt('IDLE', t, t + 1); t++; continue; }
+                    let p = ready.shift();
+                    inQueue.delete(p.id);
+                    let runTime = Math.min(p.rt, quantum);
+                    recordGantt(p.id, t, t + runTime);
+                    t += runTime;
+                    p.rt -= runTime;
+                    procs.forEach(newP => {
+                        if (newP.at <= t && newP.rt > 0 && !inQueue.has(newP.id) && newP.id !== p.id) {
+                            ready.push(newP);
+                            inQueue.add(newP.id);
+                        }
+                    });
+                    if (p.rt > 0) { ready.push(p); inQueue.add(p.id); }
+                    else { p.endTime = t; done++; }
+                }
+            } else if (algoId === 'priority') {
+                if (priorityMode === 'p') {
+                    // Preemptive priority — a higher-priority arrival preempts the running process
+                    let currentP = null;
+                    let startT = 0;
+                    while (done < procs.length) {
+                        let available = procs.filter(p => p.at <= time && p.rt > 0);
+                        if (available.length === 0) {
+                            if (currentP) { recordGantt(currentP.id, startT, time); currentP = null; }
+                            recordGantt('IDLE', time, time + 1);
+                            time++;
+                            continue;
+                        }
+                        available.sort((a, b) => a.priority - b.priority || a.at - b.at);
+                        let nextP = available[0];
+                        if (currentP !== nextP) {
+                            if (currentP) recordGantt(currentP.id, startT, time);
+                            currentP = nextP;
+                            startT = time;
+                        }
+                        currentP.rt--;
+                        time++;
+                        if (currentP.rt === 0) {
+                            recordGantt(currentP.id, startT, time);
+                            currentP.endTime = time;
+                            currentP = null;
+                            done++;
+                        }
+                    }
+                } else {
+                    // Non-preemptive priority — a running process finishes before yielding
+                    while (done < procs.length) {
+                        let available = procs.filter(p => p.at <= time && p.rt > 0);
+                        if (available.length === 0) { recordGantt('IDLE', time, time + 1); time++; continue; }
+                        available.sort((a, b) => a.priority - b.priority || a.at - b.at);
+                        let p = available[0];
+                        recordGantt(p.id, time, time + p.bt);
+                        time += p.bt;
+                        p.rt = 0;
+                        p.endTime = time;
+                        done++;
+                    }
+                }
+            }
+
+            // Merge contiguous blocks
+            let merged = [];
+            for (let b of gantt) {
+                if (merged.length > 0 && merged[merged.length - 1].id === b.id && merged[merged.length - 1].end === b.start) {
+                    merged[merged.length - 1].end = b.end;
+                } else {
+                    merged.push({ ...b });
+                }
+            }
+
+            // Calculate Response Time (first time a process is scheduled)
+            let firstStart = {};
+            for (let b of merged) {
+                if (b.id !== 'IDLE' && firstStart[b.id] === undefined) firstStart[b.id] = b.start;
+            }
+
+            let results = procs.map(p => {
+                let tat = p.endTime - p.at;
+                let wt = tat - p.bt;
+                let firstTime = firstStart[p.id] !== undefined ? firstStart[p.id] : p.at;
+                let rt = firstTime - p.at;
+                return { ...p, tat, wt, rt };
+            });
+
+            return { gantt: merged, results };
+        }
+
+        // ---------------------------------------------------------------
+        //  METRICS + PDF HELPERS
+        // ---------------------------------------------------------------
+        function computeMetrics(sim) {
+            const n = sim.results.length || 1;
+            const avgTat = (sim.results.reduce((a, c) => a + c.tat, 0) / n).toFixed(2);
+            const avgWt = (sim.results.reduce((a, c) => a + c.wt, 0) / n).toFixed(2);
+            const avgRt = (sim.results.reduce((a, c) => a + c.rt, 0) / n).toFixed(2);
+            const total = sim.gantt.length ? sim.gantt[sim.gantt.length - 1].end : 0;
+            const busy = sim.gantt.filter(b => b.id !== 'IDLE').reduce((a, b) => a + (b.end - b.start), 0);
+            const util = total ? Math.round((busy / total) * 100) : 0;
+            return { avgTat, avgWt, avgRt, total, util };
+        }
+
+        function parseHex(hex) {
+            const h = hex.replace('#', '');
+            return [parseInt(h.slice(0, 2), 16), parseInt(h.slice(2, 4), 16), parseInt(h.slice(4, 6), 16)];
+        }
+
+        function modeLabel(algo, priorityMode, quantum) {
+            let label = algo.name + ' - ' + (algo.id === 'priority'
+                ? (priorityMode === 'p' ? 'Preemptive' : 'Non-preemptive')
+                : algo.type);
+            if (algo.hasQuantum) label += ' - Quantum ' + quantum + ' ms';
+            return label;
+        }
+
+        function buildReportDoc({ algo, processes, sim, quantum, priorityMode, themeColor }) {
+            const { jsPDF } = window.jspdf;
+            const doc = new jsPDF({ unit: 'pt', format: 'a4' });
+            const W = doc.internal.pageSize.getWidth();
+            const M = 40;
+
+            doc.setFillColor(...parseHex(themeColor));
+            doc.rect(0, 0, W, 8, 'F');
+            doc.setFont('helvetica', 'bold');
+            doc.setFontSize(20);
+            doc.setTextColor(20, 24, 40);
+            doc.text('Process Engine - Scheduling Report', M, 48);
+            doc.setFont('helvetica', 'normal');
+            doc.setFontSize(10);
+            doc.setTextColor(100, 110, 130);
+            doc.text(modeLabel(algo, priorityMode, quantum) + '    ' + new Date().toLocaleString(), M, 66);
+
+            // 1) Process parameters
+            doc.setFont('helvetica', 'bold');
+            doc.setFontSize(11);
+            doc.setTextColor(30, 34, 50);
+            doc.text('1. Process Parameters', M, 92);
+            doc.autoTable({
+                startY: 100,
+                head: [['ID', 'Arrival Time', 'Burst Time', 'Priority']],
+                body: processes.map(p => [p.id, p.at, p.bt, algo.hasPriority ? p.priority : '-']),
+                theme: 'grid',
+                headStyles: { fillColor: parseHex(themeColor), textColor: 255, fontSize: 9 },
+                bodyStyles: { fontSize: 9, textColor: [40, 45, 60] },
+                margin: { left: M, right: M },
+            });
+
+            // 2) Gantt chart
+            const total = sim.gantt.length ? sim.gantt[sim.gantt.length - 1].end : 0;
+            let y = doc.lastAutoTable.finalY + 28;
+            if (y > 600) { doc.addPage(); y = 60; }
+            doc.setFont('helvetica', 'bold');
+            doc.setFontSize(11);
+            doc.setTextColor(30, 34, 50);
+            doc.text('2. Gantt Chart', M, y);
+            const gStart = M, gEnd = W - M, gH = 30;
+            const gY = y + 14;
+            if (total > 0) {
+                doc.setDrawColor(210, 214, 226);
+                doc.setLineWidth(1);
+                doc.rect(gStart, gY, gEnd - gStart, gH);
+                sim.gantt.forEach(b => {
+                    const x = gStart + ((b.start / total) * (gEnd - gStart));
+                    const w = ((b.end - b.start) / total) * (gEnd - gStart);
+                    if (b.id === 'IDLE') doc.setFillColor(230, 233, 240);
+                    else {
+                        const idx = processes.findIndex(p => p.id === b.id);
+                        doc.setFillColor(...parseHex(COLOR_HEX[idx % COLOR_HEX.length]));
+                    }
+                    doc.rect(x, gY, Math.max(0, w), gH, 'F');
+                    if (w > 14) {
+                        doc.setFont('helvetica', 'bold');
+                        doc.setFontSize(8);
+                        doc.setTextColor(255, 255, 255);
+                        doc.text(b.id, x + w / 2, gY + gH / 2 + 3, { align: 'center' });
+                    }
+                });
+                doc.setFont('helvetica', 'normal');
+                doc.setFontSize(8);
+                doc.setTextColor(120, 128, 145);
+                const step = Math.max(1, Math.ceil(total / 8));
+                for (let t = 0; t <= total; t += step) {
+                    const x = gStart + ((t / total) * (gEnd - gStart));
+                    doc.text(String(t), x, gY + gH + 14, { align: 'center' });
+                }
+                y = gY + gH + 30;
+            }
+
+            // 3) Results & calculations
+            if (y > 500) { doc.addPage(); y = 60; }
+            doc.setFont('helvetica', 'bold');
+            doc.setFontSize(11);
+            doc.setTextColor(30, 34, 50);
+            doc.text('3. Results & Calculations', M, y);
+            doc.autoTable({
+                startY: y + 8,
+                head: [['ID', 'Arrival', 'Burst', 'Completion', 'TAT', 'WT', 'RT']],
+                body: sim.results.map(p => [p.id, p.at, p.bt, p.endTime, p.tat, p.wt, p.rt]),
+                theme: 'grid',
+                headStyles: { fillColor: parseHex(themeColor), textColor: 255, fontSize: 9 },
+                bodyStyles: { fontSize: 9, textColor: [40, 45, 60] },
+                margin: { left: M, right: M },
+            });
+
+            // 4) Summary
+            let yy = doc.lastAutoTable.finalY + 24;
+            if (yy > 700) { doc.addPage(); yy = 60; }
+            const m = computeMetrics(sim);
+            doc.setFont('helvetica', 'bold');
+            doc.setFontSize(11);
+            doc.setTextColor(30, 34, 50);
+            doc.text('4. Summary', M, yy);
+            doc.setFont('helvetica', 'normal');
+            doc.setFontSize(10);
+            doc.setTextColor(60, 66, 84);
+            const lines = [
+                'Average Turnaround Time (TAT): ' + m.avgTat + ' ms',
+                'Average Waiting Time (WT)    : ' + m.avgWt + ' ms',
+                'Average Response Time (RT)   : ' + m.avgRt + ' ms',
+                'Total Timeline                : ' + m.total + ' ms',
+                'CPU Utilization               : ' + m.util + ' %',
+                '',
+                'Formulas:  TAT = Completion - Arrival',
+                '           WT  = TAT - Burst',
+                '           RT  = First Start - Arrival',
+            ];
+            doc.text(lines, M, yy + 18);
+
+            return doc;
+        }
+
+        // Dynamic Comparison PDF generator — supports any 2, 3, or more algorithms
+        function buildCompareDoc({ processes, compareRows, themeColor }) {
+            const { jsPDF } = window.jspdf;
+            const doc = new jsPDF({ unit: 'pt', format: 'a4' });
+            const W = doc.internal.pageSize.getWidth();
+            const M = 40;
+
+            doc.setFillColor(...parseHex(themeColor));
+            doc.rect(0, 0, W, 8, 'F');
+            doc.setFont('helvetica', 'bold');
+            doc.setFontSize(20);
+            doc.setTextColor(20, 24, 40);
+            doc.text('Process Engine — Dynamic Algorithm Comparison', M, 48);
+            doc.setFont('helvetica', 'normal');
+            doc.setFontSize(10);
+            doc.setTextColor(100, 110, 130);
+            doc.text(`Comparing ${compareRows.length} Chosen Algorithms | ${processes.length} Processes | ${new Date().toLocaleString()}`, M, 66);
+
+            const best = k => Math.min(...compareRows.map(r => parseFloat(r[k])));
+            const bestTat = best('avgTat'), bestWt = best('avgWt'), bestRt = best('avgRt');
+
+            doc.autoTable({
+                startY: 85,
+                head: [['Algorithm', 'Type', 'Config', 'Total', 'Avg TAT', 'Avg WT', 'Avg RT', 'CPU %']],
+                body: compareRows.map(r => [
+                    r.label,
+                    r.type,
+                    r.configLabel || '-',
+                    r.total + ' ms',
+                    r.avgTat + (parseFloat(r.avgTat) === bestTat ? ' *' : ''),
+                    r.avgWt + (parseFloat(r.avgWt) === bestWt ? ' *' : ''),
+                    r.avgRt + (parseFloat(r.avgRt) === bestRt ? ' *' : ''),
+                    r.util + ' %',
+                ]),
+                theme: 'grid',
+                headStyles: { fillColor: parseHex(themeColor), textColor: 255, fontSize: 9 },
+                bodyStyles: { fontSize: 9, textColor: [40, 45, 60] },
+                margin: { left: M, right: M },
+            });
+
+            // Mini gantt per algorithm
+            let y = doc.lastAutoTable.finalY + 28;
+            if (y > 600) { doc.addPage(); y = 60; }
+            doc.setFont('helvetica', 'bold');
+            doc.setFontSize(11);
+            doc.setTextColor(30, 34, 50);
+            doc.text('Gantt Charts Comparison (* indicates best metric value)', M, y);
+            y += 16;
+            const gStart = M + 140, gEnd = W - M, gH = 16;
+            compareRows.forEach(r => {
+                if (y + gH > 780) { doc.addPage(); y = 60; }
+                doc.setFont('helvetica', 'bold');
+                doc.setFontSize(8);
+                doc.setTextColor(60, 66, 84);
+                doc.text(r.label + (r.configLabel ? ` (${r.configLabel})` : ''), M, y + 10);
+                if (r.total > 0) {
+                    doc.setDrawColor(210, 214, 226);
+                    doc.setLineWidth(0.5);
+                    doc.rect(gStart, y, gEnd - gStart, gH);
+                    r.sim.gantt.forEach(b => {
+                        const x = gStart + ((b.start / r.total) * (gEnd - gStart));
+                        const w = ((b.end - b.start) / r.total) * (gEnd - gStart);
+                        if (b.id === 'IDLE') doc.setFillColor(230, 233, 240);
+                        else {
+                            const idx = processes.findIndex(p => p.id === b.id);
+                            doc.setFillColor(...parseHex(COLOR_HEX[idx % COLOR_HEX.length]));
+                        }
+                        doc.rect(x, y, Math.max(0, w), gH, 'F');
+                        if (w > 12) {
+                            doc.setFont('helvetica', 'bold');
+                            doc.setFontSize(7);
+                            doc.setTextColor(255, 255, 255);
+                            doc.text(b.id, x + w / 2, y + gH / 2 + 2, { align: 'center' });
+                        }
+                    });
+                }
+                y += gH + 10;
+            });
+            return doc;
+        }
+
+        // ---------------------------------------------------------------
+        //  ICONS
+        // ---------------------------------------------------------------
+        const I = ({ children, className = 'w-5 h-5', solid = false }) => (
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill={solid ? 'currentColor' : 'none'} stroke={solid ? 'none' : 'currentColor'} strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round" className={className} aria-hidden="true">{children}</svg>
+        );
+
+        const PlayIcon = () => <I solid><path fillRule="evenodd" d="M4.5 5.653c0-1.426 1.529-2.33 2.779-1.643l11.54 6.348c1.295.712 1.295 2.573 0 3.285L7.28 19.991c-1.25.687-2.779-.217-2.779-1.643V5.653z" clipRule="evenodd" /></I>;
+        const PauseIcon = () => <I solid><path fillRule="evenodd" d="M6.75 5.25a.75.75 0 01.75-.75H9a.75.75 0 01.75.75v13.5a.75.75 0 01-.75.75H7.5a.75.75 0 01-.75-.75V5.25zm7.5 0a.75.75 0 01.75-.75h1.5a.75.75 0 01.75.75v13.5a.75.75 0 01-.75.75h-1.5a.75.75 0 01-.75-.75V5.25z" clipRule="evenodd" /></I>;
+        const ResetIcon = () => <I><path strokeLinecap="round" strokeLinejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0l3.181 3.183a8.25 8.25 0 0013.803-3.7M4.031 9.865a8.25 8.25 0 0113.803-3.7l3.181 3.182m0-4.991v4.99" /></I>;
+        const CheckIcon = () => <I solid className="w-3.5 h-3.5"><path fillRule="evenodd" d="M19.916 4.626a.75.75 0 01.208 1.04l-9 13.5a.75.75 0 01-1.154.114l-6-6a.75.75 0 011.06-1.06l5.353 5.353 8.493-12.739a.75.75 0 011.04-.208z" clipRule="evenodd" /></I>;
+        const ChevronIcon = ({ isOpen }) => <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className={`w-4 h-4 text-slate-400 transform transition-transform duration-300 ${isOpen ? 'rotate-180' : ''}`} aria-hidden="true"><path fillRule="evenodd" d="M5.23 7.21a.75.75 0 011.06.02L10 11.168l3.71-3.938a.75.75 0 111.08 1.04l-4.25 4.5a.75.75 0 01-1.08 0l-4.25-4.5a.75.75 0 01.02-1.06z" clipRule="evenodd" /></svg>;
+
+        const ICONS = {
+            cpu:      () => <I><path strokeLinecap="round" strokeLinejoin="round" d="M8.25 3v1.5M4.5 8.25H3m18 0h-1.5M4.5 12H3m18 0h-1.5m-15 3.75H3m18 0h-1.5M8.25 19.5V21M12 3v1.5m0 15V21m3.75-18v1.5m0 15V21m-9-1.5h10.5a2.25 2.25 0 002.25-2.25V6.75a2.25 2.25 0 00-2.25-2.25H6.75A2.25 2.25 0 004.5 6.75v10.5a2.25 2.25 0 002.25 2.25zm.75-12h9v9h-9v-9z" /></I>,
+            clock:    () => <I><path strokeLinecap="round" strokeLinejoin="round" d="M12 6v6h4.5m4.5 0a9 9 0 11-18 0 9 9 0 0118 0z" /></I>,
+            bolt:     () => <I><path strokeLinecap="round" strokeLinejoin="round" d="M3.75 13.5l10.5-11.25L12 10.5h8.25L9.75 21.75 12 13.5H3.75z" /></I>,
+            trend:    () => <I><path strokeLinecap="round" strokeLinejoin="round" d="M2.25 18 9 11.25l4.306 4.306a11.95 11.95 0 015.814-5.518l2.74-1.22m0 0-5.94-2.281m5.94 2.28-2.28 5.941" /></I>,
+            gauge:    () => <I><path strokeLinecap="round" strokeLinejoin="round" d="M12 6v6h4.5m4.5 0a9 9 0 11-18 0 9 9 0 0118 0z" /></I>,
+            plus:     () => <I><path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" /></I>,
+            trash:    () => <I className="w-4 h-4"><path strokeLinecap="round" strokeLinejoin="round" d="M14.74 9l-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 01-2.244 2.077H8.084a2.25 2.25 0 01-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 00-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 013.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 00-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 00-7.5 0" /></I>,
+            shuffle:  () => <I><path strokeLinecap="round" strokeLinejoin="round" d="M19.5 12c0-1.232-.046-2.453-.138-3.662a4.006 4.006 0 00-3.7-3.7 48.678 48.678 0 00-7.324 0 4.006 4.006 0 00-3.7 3.7c-.017.22-.032.441-.046.662M19.5 12l3-3m-3 3-3-3m-12 3c0 1.232.046 2.453.138 3.662a4.006 4.006 0 003.7 3.7 48.656 48.656 0 007.324 0 4.006 4.006 0 003.7-3.7c.017-.22.032-.441.046-.662M4.5 12l3 3m-3-3-3 3" /></I>,
+            download: () => <I><path strokeLinecap="round" strokeLinejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 16.5m0 0L7.5 12m4.5 4.5V3" /></I>,
+            sparkle:  () => <I><path strokeLinecap="round" strokeLinejoin="round" d="M9.813 15.904 9 18.75l-.813-2.846a4.5 4.5 0 00-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 003.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 003.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 00-3.09 3.09zM18.259 8.715 18 9.75l-.259-1.035a3.375 3.375 0 00-2.455-2.456L14.25 6l1.036-.259a3.375 3.375 0 002.455-2.456L18 2.25l.259 1.035a3.375 3.375 0 002.456 2.456L21.75 6l-1.035.259a3.375 3.375 0 00-2.456 2.456z" /></I>,
+            reset:    () => <I><path strokeLinecap="round" strokeLinejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0l3.181 3.183a8.25 8.25 0 0013.803-3.7M4.031 9.865a8.25 8.25 0 0113.803-3.7l3.181 3.182m0-4.991v4.99" /></I>,
+            trophy:   () => <I><path strokeLinecap="round" strokeLinejoin="round" d="M16.5 18.75h-9m9 0a3 3 0 013 3h-15a3 3 0 013-3m9 0v-3.375c0-.621-.504-1.125-1.125-1.125h-.871M7.5 18.75v-3.375c0-.621.504-1.125 1.125-1.125h.872m5.003 0H9.497m5.003 0A6.75 6.75 0 0018 7.5V4.5a.75.75 0 00-.75-.75h-10.5A.75.75 0 006 4.5v3a6.75 6.75 0 003.497 5.875M18 6.75h1.875a2.625 2.625 0 010 5.25H18M6 6.75H4.125a2.625 2.625 0 000 5.25H6" /></I>,
+            bars:     () => <I><path strokeLinecap="round" strokeLinejoin="round" d="M3 13.125C3 12.504 3.504 12 4.125 12h2.25c.621 0 1.125.504 1.125 1.125v6.75C7.5 20.496 6.996 21 6.375 21h-2.25A1.125 1.125 0 013 19.875v-6.75zM9.75 8.625c0-.621.504-1.125 1.125-1.125h2.25c.621 0 1.125.504 1.125 1.125v11.25c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 01-1.125-1.125V8.625zM16.5 4.125c0-.621.504-1.125 1.125-1.125h2.25C20.496 3 21 3.504 21 4.125v15.75c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 01-1.125-1.125V4.125z" /></I>,
+            table:    () => <I><path strokeLinecap="round" strokeLinejoin="round" d="M3.75 6A2.25 2.25 0 016 3.75h12A2.25 2.25 0 0120.25 6v12A2.25 2.25 0 0118 20.25H6A2.25 2.25 0 013.75 18V6zM3.75 9.75h16.5m-16.5 4.5h16.5M9.75 3.75v16.5" /></I>,
+            layers:   () => <I><path strokeLinecap="round" strokeLinejoin="round" d="M6.429 9.75L2.25 12l4.179 2.25m0-4.5l5.571 3 5.571-3m-11.142 0L2.25 7.5 12 2.25l9.75 5.25-4.179 2.25m0 0L21.75 12l-4.179 2.25m0 0l4.179 2.25L12 21.75 2.25 16.5l4.179-2.25m11.142 0l-5.571 3-5.571-3" /></I>,
+            arrowRight: () => <I className="w-4 h-4"><path strokeLinecap="round" strokeLinejoin="round" d="M13.5 4.5L21 12m0 0l-7.5 7.5M21 12H3" /></I>,
+        };
+
+        // ---------------------------------------------------------------
+        //  METRIC DROPDOWN CARD — shows the actual calculation per process
+        // ---------------------------------------------------------------
+        function MetricDrop({ icon, label, avg, formula, rows, open, onToggle, theme }) {
+            return (
+                <div className={`bg-white rounded-2xl border shadow-sm transition-all duration-300 ${open ? 'border-slate-300 shadow-md' : 'border-slate-200/70 hover:border-slate-300'}`}>
+                    <button
+                        onClick={onToggle}
+                        aria-expanded={open}
+                        className="w-full p-5 flex items-center gap-4 text-left group"
+                    >
+                        <span className="h-11 w-11 rounded-2xl flex items-center justify-center flex-shrink-0 transition-transform group-hover:scale-105" style={{ backgroundColor: `${theme.color}1A`, color: theme.color }}>
+                            {icon}
+                        </span>
+                        <span className="flex-1">
+                            <span className="block text-[11px] font-semibold uppercase tracking-widest text-slate-400">{label}</span>
+                            <span className="block text-2xl font-bold text-slate-900 mt-0.5">
+                                {avg} <span className="text-xs font-medium text-slate-400">ms</span>
+                            </span>
+                        </span>
+                        <ChevronIcon isOpen={open} />
+                    </button>
+                    {open && (
+                        <div className="border-t border-slate-100 p-5">
+                            <div className="inline-flex items-center gap-1.5 bg-slate-50 border border-slate-200 rounded-lg px-2.5 py-1.5 font-mono text-xs text-slate-600 mb-4">
+                                {formula}
+                            </div>
+                            <ul className="flex flex-col gap-2">
+                                {rows.map((r, i) => (
+                                    <li key={i} className="flex items-center gap-2.5 text-sm">
+                                        <span className="h-2.5 w-2.5 rounded-full flex-shrink-0" style={{ backgroundColor: r.color }}></span>
+                                        <span className="font-mono text-slate-500 flex-1 leading-snug">{r.calc}</span>
+                                        <span className="font-mono font-bold text-slate-800 flex-shrink-0">{r.value} ms</span>
+                                    </li>
+                                ))}
+                            </ul>
+                        </div>
+                    )}
+                </div>
+            );
+        }
+
+        // ---------------------------------------------------------------
+        //  MAIN COMPONENT
+        // ---------------------------------------------------------------
+        function SchedulingSimulation() {
+            const [activeAlgo, setActiveAlgo] = useState(algorithms[0]);
+            const [theme, setTheme] = useState(THEMES[0]);
+            const [quantum, setQuantum] = useState(2);
+            const [priorityMode, setPriorityMode] = useState('np'); // 'np' | 'p'
+            const [view, setView] = useState('sim'); // 'sim' | 'compare'
+            const [compareSubView, setCompareSubView] = useState('table'); // 'table' | 'bars' | 'timelines'
+            const [showTat, setShowTat] = useState(false);
+            const [showWt, setShowWt] = useState(false);
+            const [showRt, setShowRt] = useState(false);
+            const [validationAlert, setValidationAlert] = useState(null);
+
+            const [processes, setProcesses] = useState([
+                { id: 'P1', at: 0, bt: 5, priority: 2 },
+                { id: 'P2', at: 1, bt: 3, priority: 1 },
+                { id: 'P3', at: 2, bt: 8, priority: 4 },
+                { id: 'P4', at: 3, bt: 6, priority: 3 },
+            ]);
+
+            const [simulation, setSimulation] = useState({ gantt: [], results: [] });
+
+            // Playback interaction
+            const [playbackTime, setPlaybackTime] = useState(0);
+            const [isPlaying, setIsPlaying] = useState(false);
+            const totalTime = simulation.gantt.length ? simulation.gantt[simulation.gantt.length - 1].end : 0;
+
+            // ===============================================================
+            //  DYNAMIC ALGORITHM COMPARISON STATE
+            //  User can choose 2, 3, 4, 5, 6 or more algorithms dynamically!
+            // ===============================================================
+            const [comparedItems, setComparedItems] = useState([
+                { instanceId: 'cmp_1', catalogKey: 'fcfs', algoId: 'fcfs', name: 'FCFS', type: 'Non-preemptive', quantum: 2, priorityMode: 'np' },
+                { instanceId: 'cmp_2', catalogKey: 'sjf', algoId: 'sjf', name: 'SJF', type: 'Non-preemptive', quantum: 2, priorityMode: 'np' },
+                { instanceId: 'cmp_3', catalogKey: 'srtf', algoId: 'srtf', name: 'SRTF', type: 'Preemptive', quantum: 2, priorityMode: 'np' },
+                { instanceId: 'cmp_4', catalogKey: 'rr', algoId: 'rr', name: 'Round Robin', type: 'Preemptive', quantum: 2, priorityMode: 'np' },
+            ]);
+
+            // Run single simulation
+            useEffect(() => {
+                const sim = runScheduler(activeAlgo.id, processes, quantum, priorityMode);
+                setSimulation(sim);
+                const newTotal = sim.gantt.length ? sim.gantt[sim.gantt.length - 1].end : 0;
+                setPlaybackTime(newTotal);
+                setIsPlaying(false);
+            }, [processes, activeAlgo, quantum, priorityMode]);
+
+            // Playback Engine
+            useEffect(() => {
+                let interval;
+                if (isPlaying && playbackTime < totalTime) {
+                    interval = setInterval(() => {
+                        setPlaybackTime(prev => {
+                            if (prev >= totalTime) { setIsPlaying(false); return totalTime; }
+                            return prev + 1;
+                        });
+                    }, 600);
+                } else if (playbackTime >= totalTime && isPlaying) {
+                    setIsPlaying(false);
+                }
+                return () => clearInterval(interval);
+            }, [isPlaying, playbackTime, totalTime]);
+
+            const togglePlay = () => {
+                if (playbackTime >= totalTime) setPlaybackTime(0);
+                setIsPlaying(!isPlaying);
+            };
+
+            const addProcess = () => {
+                setProcesses([...processes, { id: `P${processes.length + 1}`, at: 0, bt: 1, priority: 1 }]);
+            };
+
+            const randomize = () => {
+                setProcesses(processes.map(p => ({
+                    ...p,
+                    at: Math.floor(Math.random() * 5),
+                    bt: 1 + Math.floor(Math.random() * 8),
+                    priority: 1 + Math.floor(Math.random() * 5),
+                })));
+            };
+
+            const resetProcesses = () => {
+                setProcesses([
+                    { id: 'P1', at: 0, bt: 5, priority: 2 },
+                    { id: 'P2', at: 1, bt: 3, priority: 1 },
+                    { id: 'P3', at: 2, bt: 8, priority: 4 },
+                    { id: 'P4', at: 3, bt: 6, priority: 3 },
+                ]);
+            };
+
+            const updateProcess = (index, field, value) => {
+                const newProcs = [...processes];
+                newProcs[index][field] = Math.max(0, parseInt(value) || 0);
+                setProcesses(newProcs);
+            };
+
+            const removeProcess = (index) => {
+                if (processes.length > 1) setProcesses(processes.filter((_, i) => i !== index));
+            };
+
+            // ---------------------------------------------------------------
+            //  DYNAMIC COMPARISON HANDLERS (Choose 2, 3, or more algorithms)
+            // ---------------------------------------------------------------
+            const triggerAlert = (msg) => {
+                setValidationAlert(msg);
+                setTimeout(() => setValidationAlert(null), 3200);
+            };
+
+            // Toggle a catalog algorithm in or out of the comparison
+            const toggleAlgorithmInComparison = (catalogItem) => {
+                const isSelected = comparedItems.some(item => item.catalogKey === catalogItem.key);
+                if (isSelected) {
+                    if (comparedItems.length <= 2) {
+                        triggerAlert('Comparison requires at least 2 algorithms! Please select another before removing this one.');
+                        return;
+                    }
+                    setComparedItems(comparedItems.filter(item => item.catalogKey !== catalogItem.key));
+                } else {
+                    const newItem = {
+                        instanceId: 'cmp_' + Date.now() + '_' + Math.random().toString(36).substr(2, 4),
+                        catalogKey: catalogItem.key,
+                        algoId: catalogItem.algoId,
+                        name: catalogItem.name,
+                        type: catalogItem.type,
+                        quantum: catalogItem.defaultQuantum || 2,
+                        priorityMode: catalogItem.defaultPriorityMode || 'np',
+                    };
+                    setComparedItems([...comparedItems, newItem]);
+                }
+            };
+
+            // Apply a preset (e.g. 2 algorithms, 3 algorithms, 4, or All)
+            const applyComparisonPreset = (preset) => {
+                const newItems = preset.keys.map((k, idx) => {
+                    const cat = ALGORITHM_CATALOG.find(c => c.key === k);
+                    return {
+                        instanceId: 'cmp_preset_' + idx + '_' + Date.now(),
+                        catalogKey: cat.key,
+                        algoId: cat.algoId,
+                        name: cat.name,
+                        type: cat.type,
+                        quantum: cat.defaultQuantum || 2,
+                        priorityMode: cat.defaultPriorityMode || 'np',
+                    };
+                });
+                setComparedItems(newItems);
+            };
+
+            // Remove a specific row/item from comparison
+            const removeComparisonItem = (instanceId) => {
+                if (comparedItems.length <= 2) {
+                    triggerAlert('Comparison requires at least 2 algorithms! You cannot remove more.');
+                    return;
+                }
+                setComparedItems(comparedItems.filter(item => item.instanceId !== instanceId));
+            };
+
+            // Update item property (e.g. quantum or priority mode directly inside comparison)
+            const updateComparisonItemProp = (instanceId, field, value) => {
+                setComparedItems(comparedItems.map(item => {
+                    if (item.instanceId === instanceId) {
+                        return { ...item, [field]: value };
+                    }
+                    return item;
+                }));
+            };
+
+            // Add duplicate / variant algorithm (e.g. Round Robin with another quantum)
+            const addAlgorithmVariant = (catalogKey) => {
+                const cat = ALGORITHM_CATALOG.find(c => c.key === catalogKey) || ALGORITHM_CATALOG[0];
+                const countOfThis = comparedItems.filter(i => i.catalogKey === catalogKey).length;
+                const newItem = {
+                    instanceId: 'cmp_var_' + Date.now(),
+                    catalogKey: cat.key,
+                    algoId: cat.algoId,
+                    name: `${cat.name}${countOfThis > 0 ? ` (Var ${countOfThis + 1})` : ''}`,
+                    type: cat.type,
+                    quantum: cat.hasQuantum ? (countOfThis === 1 ? 4 : 3) : (cat.defaultQuantum || 2),
+                    priorityMode: cat.defaultPriorityMode || 'np',
+                };
+                setComparedItems([...comparedItems, newItem]);
+            };
+
+            // Switch to simulator view and load that exact algorithm
+            const switchToSimulatorWithAlgo = (item) => {
+                const matchAlgo = algorithms.find(a => a.id === item.algoId) || algorithms[0];
+                setActiveAlgo(matchAlgo);
+                if (item.quantum) setQuantum(item.quantum);
+                if (item.priorityMode) setPriorityMode(item.priorityMode);
+                setView('sim');
+            };
+
+            // ---------------------------------------------------------------
+            //  DERIVED METRICS & RESULTS
+            // ---------------------------------------------------------------
+            const numProcs = simulation.results.length || 1;
+            const avgTat = (simulation.results.reduce((a, c) => a + c.tat, 0) / numProcs).toFixed(2);
+            const avgWt = (simulation.results.reduce((a, c) => a + c.wt, 0) / numProcs).toFixed(2);
+            const avgRt = (simulation.results.reduce((a, c) => a + c.rt, 0) / numProcs).toFixed(2);
+
+            const busyTime = simulation.gantt.filter(b => b.id !== 'IDLE').reduce((a, b) => a + (b.end - b.start), 0);
+            const utilization = totalTime ? Math.round((busyTime / totalTime) * 100) : 0;
+            const throughput = totalTime ? (simulation.results.length / totalTime).toFixed(3) : '0';
+
+            const displayType = activeAlgo.id === 'priority'
+                ? (priorityMode === 'p' ? 'Preemptive' : 'Non-preemptive')
+                : activeAlgo.type;
+
+            const activeBlock = simulation.gantt.find(b => playbackTime > b.start && playbackTime <= b.end);
+            const currentlyActiveProcessId = activeBlock ? activeBlock.id : null;
+
+            // Ready queue snapshot at the current playback time
+            const readyState = (() => {
+                const t = playbackTime;
+                const running = simulation.gantt.find(b => t > b.start && t <= b.end);
+                const runningId = running ? running.id : null;
+                const executed = {};
+                simulation.gantt.forEach(b => {
+                    if (b.id === 'IDLE') return;
+                    const overlap = Math.max(0, Math.min(b.end, t) - b.start);
+                    executed[b.id] = (executed[b.id] || 0) + overlap;
+                });
+                const states = simulation.results.map(p => ({
+                    id: p.id,
+                    remaining: Math.max(0, p.bt - (executed[p.id] || 0)),
+                    arrived: p.at <= t,
+                }));
+                return {
+                    runningId,
+                    running: runningId && runningId !== 'IDLE' ? states.find(s => s.id === runningId) : null,
+                    ready: states.filter(s => s.arrived && s.remaining > 0 && s.id !== runningId),
+                    completed: states.filter(s => s.arrived && s.remaining === 0).length,
+                    total: states.length,
+                };
+            })();
+
+            // Event log derived from gantt blocks
+            let events = [];
+            {
+                let seenFirst = {};
+                simulation.gantt.forEach((b, i) => {
+                    if (b.id === 'IDLE') {
+                        events.push({ time: b.start, kind: 'idle', text: 'CPU idle' });
+                    } else {
+                        const isFirst = seenFirst[b.id] === undefined;
+                        if (isFirst) seenFirst[b.id] = true;
+                        const hasLater = simulation.gantt.slice(i + 1).some(x => x.id === b.id);
+                        events.push({ time: b.start, kind: isFirst ? 'start' : 'resume', text: isFirst ? `${b.id} started` : `${b.id} resumed` });
+                        events.push({ time: b.end, kind: hasLater ? 'preempt' : 'done', text: hasLater ? `${b.id} preempted` : `${b.id} completed` });
+                    }
+                });
+                events.sort((a, b) => a.time - b.time);
+            }
+            const visibleEvents = events.filter(e => e.time <= playbackTime).reverse();
+            const upcomingCount = events.filter(e => e.time > playbackTime).length;
+
+            // Metric dropdown data (shows the math)
+            const metricRows = {
+                tat: simulation.results.map((p, i) => ({
+                    color: COLOR_HEX[i % COLOR_HEX.length],
+                    calc: `${p.id}: Completion(${p.endTime}) - Arrival(${p.at})`,
+                    value: p.tat,
+                })),
+                wt: simulation.results.map((p, i) => ({
+                    color: COLOR_HEX[i % COLOR_HEX.length],
+                    calc: `${p.id}: TAT(${p.tat}) - Burst(${p.bt})`,
+                    value: p.wt,
+                })),
+                rt: simulation.results.map((p, i) => ({
+                    color: COLOR_HEX[i % COLOR_HEX.length],
+                    calc: `${p.id}: First start(${p.at + p.rt}) - Arrival(${p.at})`,
+                    value: p.rt,
+                })),
+            };
+
+            // ===============================================================
+            //  DYNAMIC COMPARISON ROWS CALCULATION
+            // ===============================================================
+            const dynamicCompareRows = useMemo(() => {
+                return comparedItems.map(item => {
+                    const sim = runScheduler(item.algoId, processes, item.quantum || quantum, item.priorityMode || priorityMode);
+                    const metrics = computeMetrics(sim);
+                    let configLabel = '';
+                    if (item.algoId === 'rr') configLabel = `q=${item.quantum || 2}ms`;
+                    else if (item.algoId === 'priority') configLabel = item.priorityMode === 'p' ? 'Preemptive' : 'Non-preemptive';
+
+                    return {
+                        ...item,
+                        label: item.name,
+                        configLabel,
+                        sim,
+                        ...metrics,
+                    };
+                });
+            }, [comparedItems, processes, quantum, priorityMode]);
+
+            const bestTat = Math.min(...dynamicCompareRows.map(r => parseFloat(r.avgTat)));
+            const bestWt = Math.min(...dynamicCompareRows.map(r => parseFloat(r.avgWt)));
+            const bestRt = Math.min(...dynamicCompareRows.map(r => parseFloat(r.avgRt)));
+
+            // Identify best algorithm winners
+            const winnerWt = dynamicCompareRows.find(r => parseFloat(r.avgWt) === bestWt);
+            const winnerTat = dynamicCompareRows.find(r => parseFloat(r.avgTat) === bestTat);
+            const winnerRt = dynamicCompareRows.find(r => parseFloat(r.avgRt) === bestRt);
+
+            // Maximum values for comparative bar scaling
+            const maxTat = Math.max(...dynamicCompareRows.map(r => parseFloat(r.avgTat)), 1);
+            const maxWt = Math.max(...dynamicCompareRows.map(r => parseFloat(r.avgWt)), 1);
+            const maxRt = Math.max(...dynamicCompareRows.map(r => parseFloat(r.avgRt)), 1);
+            const maxTimelineInCompare = Math.max(...dynamicCompareRows.map(r => r.total), 1);
+
+            const rulerStep = totalTime <= 12 ? 1 : Math.ceil(totalTime / 12);
+
+            const handleExport = () => {
+                if (!window.jspdf) { alert('PDF library not loaded yet. Check your connection and reload.'); return; }
+                const doc = view === 'compare'
+                    ? buildCompareDoc({ processes, compareRows: dynamicCompareRows, themeColor: theme.color })
+                    : buildReportDoc({ algo: activeAlgo, processes, sim: simulation, quantum, priorityMode, themeColor: theme.color });
+                doc.save(view === 'compare' ? `ProcessEngine-Comparison-${dynamicCompareRows.length}Algos.pdf` : `ProcessEngine-${activeAlgo.name}.pdf`);
+            };
+
+            const StepBadge = ({ n }) => (
+                <span className="h-7 w-7 rounded-full flex items-center justify-center text-xs font-bold text-white flex-shrink-0" style={{ backgroundColor: theme.color, boxShadow: `0 2px 10px ${theme.glow}` }}>
+                    {n}
+                </span>
+            );
+
+            // ---------------------------------------------------------------
+            //  RENDER
+            // ---------------------------------------------------------------
+            return (
+                <div className="min-h-screen text-slate-700 pb-12" style={{ '--primary': theme.color, '--primary-glow': theme.glow }}>
+                    {/* Soft ambient blobs */}
+                    <div className="pointer-events-none fixed inset-0 overflow-hidden" aria-hidden="true">
+                        <div className="absolute -top-40 left-1/4 h-[420px] w-[520px] rounded-full opacity-[0.14] blur-[110px] transition-colors duration-700" style={{ backgroundColor: theme.color }}></div>
+                        <div className="absolute bottom-0 right-0 h-[320px] w-[420px] rounded-full opacity-[0.10] blur-[100px] transition-colors duration-700" style={{ backgroundColor: theme.color }}></div>
+                    </div>
+
+                    {/* Toast Notification Alert */}
+                    {validationAlert && (
+                        <div className="fixed top-16 left-1/2 transform -translate-x-1/2 z-50 bg-slate-900 text-white text-xs font-semibold px-4 py-2.5 rounded-2xl shadow-2xl border border-slate-700 flex items-center gap-2 animate-bounce">
+                            <span className="h-2 w-2 rounded-full bg-amber-400"></span>
+                            {validationAlert}
+                        </div>
+                    )}
+
+                    {/* ================= NAVBAR ================= */}
+                    <header className="sticky top-0 z-40 backdrop-blur-xl bg-white/80 border-b border-slate-200/70">
+                        <div className="max-w-[1400px] mx-auto px-4 sm:px-6 py-3 flex items-center gap-4 flex-wrap">
+                            <div className="flex items-center gap-3 mr-auto">
+                                <div
+                                    className="h-10 w-10 rounded-2xl flex items-center justify-center text-white"
+                                    style={{ background: `linear-gradient(135deg, ${theme.color}, ${theme.color}99)`, boxShadow: `0 4px 16px ${theme.glow}` }}
+                                    aria-hidden="true"
+                                >
+                                    <ICONS.cpu />
+                                </div>
+                                <div className="leading-tight">
+                                    <h1 className="text-base font-bold text-slate-900 tracking-tight">Process Engine</h1>
+                                    <p className="text-[10px] text-slate-400 uppercase tracking-widest font-medium">CPU Scheduling Playground</p>
+                                </div>
+                            </div>
+
+                            {/* View tabs */}
+                            <div className="flex gap-1 p-1 rounded-2xl bg-slate-100 border border-slate-200/70" role="tablist" aria-label="App view">
+                                <button
+                                    role="tab"
+                                    aria-selected={view === 'sim'}
+                                    onClick={() => setView('sim')}
+                                    className={`px-4 py-1.5 rounded-xl text-xs font-semibold transition-all ${view === 'sim' ? 'text-white' : 'text-slate-500 hover:text-slate-700'}`}
+                                    style={view === 'sim' ? { backgroundColor: theme.color, boxShadow: `0 2px 10px ${theme.glow}` } : undefined}
+                                >
+                                    Simulator
+                                </button>
+                                <button
+                                    role="tab"
+                                    aria-selected={view === 'compare'}
+                                    onClick={() => setView('compare')}
+                                    className={`px-4 py-1.5 rounded-xl text-xs font-semibold transition-all flex items-center gap-1.5 ${view === 'compare' ? 'text-white' : 'text-slate-500 hover:text-slate-700'}`}
+                                    style={view === 'compare' ? { backgroundColor: theme.color, boxShadow: `0 2px 10px ${theme.glow}` } : undefined}
+                                >
+                                    <span>Compare</span>
+                                    <span className={`text-[10px] px-1.5 py-0.2 rounded-full font-bold ${view === 'compare' ? 'bg-white/25 text-white' : 'bg-slate-200 text-slate-600'}`}>
+                                        {comparedItems.length}
+                                    </span>
+                                </button>
+                            </div>
+
+                            {/* Theme swatches */}
+                            <div className="flex items-center gap-1.5" role="radiogroup" aria-label="Accent theme">
+                                {THEMES.map((t) => {
+                                    const active = theme.name === t.name;
+                                    return (
+                                        <button
+                                            key={t.name}
+                                            role="radio"
+                                            aria-checked={active}
+                                            aria-label={`${t.name} theme`}
+                                            title={t.name}
+                                            onClick={() => setTheme(t)}
+                                            className={`h-7 w-7 rounded-full flex items-center justify-center transition-all duration-200 hover:scale-110 ${
+                                                active ? 'ring-2 ring-white ring-offset-2 ring-offset-white scale-105' : 'ring-1 ring-slate-300 hover:ring-slate-400'
+                                            }`}
+                                            style={{ backgroundColor: t.color, boxShadow: active ? `0 0 14px ${t.glow}` : undefined }}
+                                        >
+                                            {active && <CheckIcon />}
+                                        </button>
+                                    );
+                                })}
+                            </div>
+
+                            {/* Export */}
+                            <button
+                                onClick={handleExport}
+                                className="flex items-center gap-1.5 text-xs font-semibold text-white px-3.5 py-2 rounded-xl transition-all hover:scale-[1.03] active:scale-95"
+                                style={{ backgroundColor: theme.color, boxShadow: `0 4px 16px ${theme.glow}` }}
+                            >
+                                <span className="w-4 h-4"><ICONS.download /></span>
+                                Export PDF
+                            </button>
+                        </div>
+                    </header>
+
+                    {/* ================= SIMULATOR VIEW ================= */}
+                    {view === 'sim' && (
+                        <main className="max-w-[1400px] mx-auto px-4 sm:px-6 py-6">
+                            {/* ===== STATS STRIP ===== */}
+                            <div className="grid grid-cols-2 md:grid-cols-5 gap-3 mb-6">
+                                {[
+                                    { label: 'CPU Utilization', value: utilization, suffix: '%', icon: <ICONS.cpu /> },
+                                    { label: 'Throughput', value: throughput, suffix: ' proc/ms', icon: <ICONS.gauge /> },
+                                    { label: 'Avg TAT', value: avgTat, suffix: ' ms', icon: <ICONS.trend /> },
+                                    { label: 'Avg WT', value: avgWt, suffix: ' ms', icon: <ICONS.clock /> },
+                                    { label: 'Avg RT', value: avgRt, suffix: ' ms', icon: <ICONS.bolt /> },
+                                ].map(s => (
+                                    <div key={s.label} className="rounded-2xl border border-slate-200/70 bg-white shadow-sm p-4 flex items-center gap-3">
+                                        <span className="h-10 w-10 rounded-xl flex items-center justify-center flex-shrink-0" style={{ backgroundColor: `${theme.color}1A`, color: theme.color }}>
+                                            {s.icon}
+                                        </span>
+                                        <div className="min-w-0">
+                                            <p className="text-[10px] font-semibold uppercase tracking-widest text-slate-400 truncate">{s.label}</p>
+                                            <p className="text-lg font-bold text-slate-900 leading-tight truncate">
+                                                {s.value}<span className="text-[10px] font-medium text-slate-400">{s.suffix}</span>
+                                            </p>
+                                        </div>
+                                    </div>
+                                ))}
+                            </div>
+
+                            <div className="grid lg:grid-cols-[380px_1fr] gap-6">
+                                {/* -------- LEFT: PROCESS SETUP -------- */}
+                                <section className="flex flex-col gap-6" aria-label="Process configuration">
+                                    {/* Algorithm picker */}
+                                    <div className="rounded-3xl border border-slate-200/70 bg-white shadow-sm overflow-hidden">
+                                        <div className="px-5 py-4 border-b border-slate-100 flex items-center justify-between">
+                                            <div>
+                                                <h2 className="text-sm font-bold text-slate-900 leading-tight">Pick an Algorithm</h2>
+                                                <p className="text-[11px] text-slate-400">How should the CPU decide what runs next?</p>
+                                            </div>
+                                            <button
+                                                onClick={() => setView('compare')}
+                                                className="text-[11px] font-semibold text-indigo-600 hover:text-indigo-800 transition-colors flex items-center gap-1"
+                                                style={{ color: theme.color }}
+                                            >
+                                                Compare Mode <ICONS.arrowRight />
+                                            </button>
+                                        </div>
+                                        <div className="p-3 flex flex-col gap-2">
+                                            {algorithms.map((algo) => {
+                                                const active = activeAlgo.id === algo.id;
+                                                const rowType = algo.id === 'priority' ? displayType : algo.type;
+                                                return (
+                                                    <div key={algo.id}>
+                                                        <button
+                                                            onClick={() => setActiveAlgo(algo)}
+                                                            aria-pressed={active}
+                                                            className={`w-full text-left px-4 py-3 rounded-2xl transition-all duration-200 text-sm flex items-center gap-3 ${
+                                                                active
+                                                                    ? 'text-white shadow-md'
+                                                                    : 'bg-slate-50 border border-slate-200/70 text-slate-600 hover:border-slate-300 hover:bg-white'
+                                                            }`}
+                                                            style={active ? { backgroundColor: theme.color, boxShadow: `0 6px 18px ${theme.glow}` } : undefined}
+                                                        >
+                                                            <span className="flex-1 min-w-0">
+                                                                <span className="block font-bold leading-tight">{algo.name}</span>
+                                                                <span className={`block text-[11px] truncate ${active ? 'text-white/75' : 'text-slate-400'}`}>{algo.desc}</span>
+                                                            </span>
+                                                            <span className={`text-[9px] font-bold px-2 py-0.5 rounded-full uppercase tracking-wider flex-shrink-0 ${active ? 'bg-white/20 text-white' : 'bg-white text-slate-500 border border-slate-200'}`}>
+                                                                {rowType}
+                                                            </span>
+                                                        </button>
+                                                        {algo.id === 'priority' && (
+                                                            <div className="mt-2 grid grid-cols-2 gap-2 pl-4" role="radiogroup" aria-label="Priority preemption mode">
+                                                                {[
+                                                                    { id: 'p', label: 'Preemptive' },
+                                                                    { id: 'np', label: 'Non-preemptive' },
+                                                                ].map(m => {
+                                                                    const mActive = active && priorityMode === m.id;
+                                                                    return (
+                                                                        <button
+                                                                            key={m.id}
+                                                                            role="radio"
+                                                                            aria-checked={mActive}
+                                                                            onClick={() => { setActiveAlgo(algo); setPriorityMode(m.id); }}
+                                                                            className={`text-[11px] font-semibold px-3 py-1.5 rounded-xl transition-all ${
+                                                                                mActive
+                                                                                    ? 'text-white'
+                                                                                    : 'bg-slate-50 border border-slate-200/70 text-slate-500 hover:text-slate-700'
+                                                                            }`}
+                                                                            style={mActive ? { backgroundColor: theme.color } : undefined}
+                                                                        >
+                                                                            {m.label}
+                                                                        </button>
+                                                                    );
+                                                                })}
+                                                            </div>
+                                                        )}
+                                                    </div>
+                                                );
+                                            })}
+                                        </div>
+                                    </div>
+
+                                    <div className="rounded-3xl border border-slate-200/70 bg-white shadow-sm overflow-hidden">
+                                        <div className="px-5 py-4 border-b border-slate-100 flex items-center gap-3">
+                                            <StepBadge n={1} />
+                                            <div className="mr-auto">
+                                                <h2 className="text-sm font-bold text-slate-900 leading-tight">Process Setup</h2>
+                                                <p className="text-[11px] text-slate-400">Tune each process to your liking</p>
+                                            </div>
+                                            <button
+                                                onClick={randomize}
+                                                title="Randomize processes"
+                                                className="flex items-center gap-1 text-[11px] font-semibold text-slate-600 bg-white border border-slate-300 hover:border-slate-400 px-2.5 py-1.5 rounded-lg transition-all hover:-translate-y-0.5 active:translate-y-0"
+                                            >
+                                                <span className="w-3.5 h-3.5"><ICONS.shuffle /></span>
+                                                Random
+                                            </button>
+                                            <button
+                                                onClick={resetProcesses}
+                                                title="Reset demo processes"
+                                                className="flex items-center gap-1 text-[11px] font-semibold text-slate-600 bg-white border border-slate-300 hover:border-slate-400 px-2.5 py-1.5 rounded-lg transition-all hover:-translate-y-0.5 active:translate-y-0"
+                                            >
+                                                <span className="w-3.5 h-3.5"><ICONS.reset /></span>
+                                                Reset
+                                            </button>
+                                        </div>
+
+                                        <div className="p-4 flex flex-col gap-3 max-h-[560px] overflow-y-auto slim-scroll">
+                                            {processes.map((p, i) => {
+                                                const isActive = currentlyActiveProcessId === p.id;
+                                                const hex = COLOR_HEX[i % COLOR_HEX.length];
+                                                const tNow = playbackTime;
+                                                const res = simulation.results.find(r => r.id === p.id);
+                                                let pstate = 'ready';
+                                                if (isActive) pstate = 'running';
+                                                else if (res && res.at > tNow) pstate = 'waiting';
+                                                else if (res && res.endTime <= tNow) pstate = 'done';
+                                                const badgeCls = {
+                                                    running: '',
+                                                    ready: 'bg-amber-50 text-amber-600 border-amber-200',
+                                                    done: 'bg-emerald-50 text-emerald-600 border-emerald-200',
+                                                    waiting: 'bg-slate-50 text-slate-400 border-slate-200',
+                                                }[pstate];
+                                                return (
+                                                    <div
+                                                        key={p.id}
+                                                        className={`rounded-2xl border p-4 transition-all duration-300 ${isActive ? '' : 'border-slate-200/70 hover:border-slate-300'}`}
+                                                        style={isActive
+                                                            ? { borderColor: theme.color, backgroundColor: `${theme.color}0D`, boxShadow: `0 0 0 3px ${theme.glow}22` }
+                                                            : undefined}
+                                                    >
+                                                        <div className="flex items-center gap-2.5">
+                                                            <span className="h-3 w-3 rounded-full flex-shrink-0" style={{ backgroundColor: hex }}></span>
+                                                            <span className={`text-sm font-bold flex-shrink-0 ${isActive ? 'text-slate-900' : 'text-slate-700'}`}>{p.id}</span>
+                                                            <span
+                                                                className={`text-[10px] font-medium px-2 py-0.5 rounded-full border ${badgeCls} ml-auto`}
+                                                                style={pstate === 'running' ? { backgroundColor: `${theme.color}1A`, color: theme.color, borderColor: `${theme.color}33` } : undefined}
+                                                            >
+                                                                {pstate}
+                                                            </span>
+                                                            <button
+                                                                onClick={() => removeProcess(i)}
+                                                                disabled={processes.length <= 1}
+                                                                aria-label={`Remove ${p.id}`}
+                                                                className="text-slate-300 hover:text-rose-500 disabled:opacity-30 disabled:cursor-not-allowed transition-colors p-1 rounded-lg hover:bg-rose-50"
+                                                            >
+                                                                <ICONS.trash />
+                                                            </button>
+                                                        </div>
+
+                                                        <div className={`mt-3 grid gap-2 ${activeAlgo.hasPriority ? 'grid-cols-3' : 'grid-cols-2'}`}>
+                                                            <label className="flex flex-col gap-1">
+                                                                <span className="text-[9px] font-semibold uppercase tracking-wider text-slate-400">Arrival</span>
+                                                                <input
+                                                                    type="number"
+                                                                    min="0"
+                                                                    value={p.at}
+                                                                    onChange={(e) => updateProcess(i, 'at', e.target.value)}
+                                                                    aria-label={`${p.id} arrival time`}
+                                                                    className="w-full bg-slate-50 border border-slate-200 rounded-lg px-2 py-1.5 text-center text-xs font-semibold text-slate-700 focus:outline-none focus:border-[color:var(--primary)] focus:ring-2 focus:ring-slate-200 transition-colors"
+                                                                />
+                                                            </label>
+                                                            {activeAlgo.hasPriority && (
+                                                                <label className="flex flex-col gap-1">
+                                                                    <span className="text-[9px] font-semibold uppercase tracking-wider text-slate-400">Priority</span>
+                                                                    <input
+                                                                        type="number"
+                                                                        min="1"
+                                                                        value={p.priority}
+                                                                        onChange={(e) => updateProcess(i, 'priority', e.target.value)}
+                                                                        aria-label={`${p.id} priority`}
+                                                                        className="w-full bg-slate-50 border border-slate-200 rounded-lg px-2 py-1.5 text-center text-xs font-semibold text-slate-700 focus:outline-none focus:border-[color:var(--primary)] focus:ring-2 focus:ring-slate-200 transition-colors"
+                                                                    />
+                                                                </label>
+                                                            )}
+                                                            <label className="flex flex-col gap-1">
+                                                                <span className="text-[9px] font-semibold uppercase tracking-wider text-slate-400">Burst</span>
+                                                                <input
+                                                                    type="number"
+                                                                    min="1"
+                                                                    value={p.bt}
+                                                                    onChange={(e) => updateProcess(i, 'bt', e.target.value)}
+                                                                    aria-label={`${p.id} burst time`}
+                                                                    className="w-full bg-slate-50 border border-slate-200 rounded-lg px-2 py-1.5 text-center text-xs font-semibold text-slate-700 focus:outline-none focus:border-[color:var(--primary)] focus:ring-2 focus:ring-slate-200 transition-colors"
+                                                                />
+                                                            </label>
+                                                        </div>
+
+                                                        {/* Burst slider */}
+                                                        <div className="mt-3 flex items-center gap-3">
+                                                            <span className="text-[9px] font-semibold uppercase tracking-wider text-slate-400 flex-shrink-0">Length</span>
+                                                            <input
+                                                                type="range"
+                                                                min="1"
+                                                                max="15"
+                                                                value={p.bt}
+                                                                onChange={(e) => updateProcess(i, 'bt', e.target.value)}
+                                                                aria-label={`${p.id} burst time slider`}
+                                                                className="flex-1"
+                                                            />
+                                                            <span className="text-xs font-mono font-bold flex-shrink-0" style={{ color: hex }}>{p.bt} ms</span>
+                                                        </div>
+                                                    </div>
+                                                );
+                                            })}
+
+                                            <button
+                                                onClick={addProcess}
+                                                className="w-full py-3 rounded-2xl border-2 border-dashed border-slate-300 text-slate-500 text-sm font-semibold hover:border-slate-400 hover:text-slate-700 hover:bg-slate-50 transition-all flex items-center justify-center gap-1.5"
+                                            >
+                                                <span className="w-4 h-4"><ICONS.plus /></span>
+                                                Add another process
+                                            </button>
+                                        </div>
+                                    </div>
+
+                                    {/* Quantum */}
+                                    <div className={`transition-all duration-500 overflow-hidden ${activeAlgo.hasQuantum ? 'max-h-32 opacity-100' : 'max-h-0 opacity-0'}`}>
+                                        <div className="rounded-3xl border border-slate-200/70 bg-white shadow-sm p-4">
+                                            <div className="flex items-center justify-between mb-2.5">
+                                                <span className="text-[10px] font-semibold uppercase tracking-widest text-slate-400">Time Quantum</span>
+                                                <span className="text-xs font-bold font-mono px-2 py-0.5 rounded-lg" style={{ backgroundColor: `${theme.color}1A`, color: theme.color }}>{quantum} ms</span>
+                                            </div>
+                                            <div className="flex gap-1 p-1 rounded-xl bg-slate-100 border border-slate-200">
+                                                {QUANTUM_OPTIONS.map(q => (
+                                                    <button
+                                                        key={q}
+                                                        onClick={() => setQuantum(q)}
+                                                        aria-pressed={quantum === q}
+                                                        className={`flex-1 py-2 rounded-lg text-xs font-semibold transition-all ${quantum === q ? 'text-white' : 'text-slate-500 hover:text-slate-700'}`}
+                                                        style={quantum === q ? { backgroundColor: theme.color } : undefined}
+                                                    >
+                                                        {q}
+                                                    </button>
+                                                ))}
+                                            </div>
+                                        </div>
+                                    </div>
+                                </section>
+
+                                {/* -------- RIGHT: RUN + RESULTS -------- */}
+                                <section className="flex flex-col gap-6" aria-label="Simulation stage">
+                                    {/* Timeline */}
+                                    <div className="rounded-3xl border border-slate-200/70 bg-white shadow-sm p-5 sm:p-6">
+                                        <div className="flex items-center gap-3 mb-5">
+                                            <StepBadge n={2} />
+                                            <div className="mr-auto">
+                                                <h2 className="text-sm font-bold text-slate-900 leading-tight">Run the Timeline</h2>
+                                                <p className="text-[11px] text-slate-400">Watch the CPU pick processes</p>
+                                            </div>
+                                            <span className="hidden sm:inline text-[11px] font-mono font-semibold px-2.5 py-1 rounded-lg bg-slate-100 text-slate-500 border border-slate-200">
+                                                t = {playbackTime} / {totalTime}
+                                            </span>
+                                        </div>
+
+                                        {/* Player controls */}
+                                        <div className="flex items-center gap-3 mb-5 flex-wrap">
+                                            <button
+                                                onClick={togglePlay}
+                                                aria-label={isPlaying ? 'Pause playback' : 'Play playback'}
+                                                className="h-12 w-12 flex items-center justify-center rounded-2xl text-white transition-transform hover:scale-105 active:scale-95"
+                                                style={{ backgroundColor: theme.color, boxShadow: `0 6px 20px ${theme.glow}` }}
+                                            >
+                                                {isPlaying ? <PauseIcon /> : <PlayIcon />}
+                                            </button>
+                                            <button
+                                                onClick={() => { setPlaybackTime(0); setIsPlaying(false); }}
+                                                aria-label="Reset timeline"
+                                                title="Reset"
+                                                className="h-12 w-12 flex items-center justify-center rounded-2xl bg-white text-slate-500 hover:text-slate-700 border border-slate-300 hover:border-slate-400 transition-colors"
+                                            >
+                                                <ResetIcon />
+                                            </button>
+
+                                            <div className="flex-1 min-w-[180px]">
+                                                <input
+                                                    type="range"
+                                                    min="0"
+                                                    max={totalTime || 1}
+                                                    value={playbackTime}
+                                                    onChange={(e) => { setPlaybackTime(Number(e.target.value)); setIsPlaying(false); }}
+                                                    aria-label="Timeline scrubber"
+                                                    className="w-full"
+                                                />
+                                                <div className="flex justify-between text-[10px] font-mono text-slate-400 mt-0.5 px-0.5">
+                                                    <span>0</span><span>{totalTime}</span>
+                                                </div>
+                                            </div>
+
+                                            <div className="flex items-center gap-2 min-w-[150px]">
+                                                <span className="text-[10px] font-semibold uppercase tracking-widest text-slate-400">CPU</span>
+                                                <div className="flex-1 h-2.5 rounded-full bg-slate-100 overflow-hidden">
+                                                    <div className="h-full rounded-full transition-all duration-500" style={{ width: `${utilization}%`, backgroundColor: theme.color, boxShadow: `0 0 8px ${theme.glow}` }}></div>
+                                                </div>
+                                                <span className="text-xs font-bold font-mono" style={{ color: theme.color }}>{utilization}%</span>
+                                            </div>
+                                        </div>
+
+                                        {/* Ready queue */}
+                                        <div className="flex flex-wrap items-center gap-2 mb-5 rounded-2xl bg-slate-50 border border-slate-200 px-3.5 py-2.5">
+                                            <span className="text-[9px] font-semibold uppercase tracking-widest text-slate-400 mr-1">Ready</span>
+                                            {readyState.running && (
+                                                <span className="flex items-center gap-1.5 text-[11px] font-bold px-2.5 py-1 rounded-lg" style={{ backgroundColor: `${theme.color}1A`, color: theme.color }}>
+                                                    <span className="relative flex h-1.5 w-1.5">
+                                                        <span className="animate-ping absolute inline-flex h-full w-full rounded-full opacity-75" style={{ backgroundColor: theme.color }}></span>
+                                                        <span className="relative inline-flex rounded-full h-1.5 w-1.5" style={{ backgroundColor: theme.color }}></span>
+                                                    </span>
+                                                    RUN {readyState.running.id} · {readyState.running.remaining}ms
+                                                </span>
+                                            )}
+                                            {readyState.runningId === 'IDLE' && (
+                                                <span className="text-[11px] text-slate-500 px-2.5 py-1 rounded-lg bg-white border border-slate-200">CPU idle</span>
+                                            )}
+                                            {readyState.ready.length > 0 ? (
+                                                readyState.ready.map(p => {
+                                                    const idx = processes.findIndex(x => x.id === p.id);
+                                                    return (
+                                                        <span key={p.id} className="flex items-center gap-1.5 text-[11px] px-2.5 py-1 rounded-lg bg-white border border-slate-200 text-slate-600">
+                                                            <span className="h-2 w-2 rounded-full" style={{ backgroundColor: COLOR_HEX[idx % COLOR_HEX.length] }}></span>
+                                                            {p.id} · {p.remaining}ms
+                                                        </span>
+                                                    );
+                                                })
+                                            ) : (
+                                                readyState.runningId !== 'IDLE' && <span className="text-[11px] text-slate-400">queue empty</span>
+                                            )}
+                                            <span className="ml-auto text-[10px] font-mono text-slate-400">{readyState.completed}/{readyState.total} done</span>
+                                        </div>
+
+                                        {/* Gantt */}
+                                        {totalTime === 0 ? (
+                                            <div className="text-center text-sm text-slate-400 py-10 bg-slate-50 rounded-2xl border border-dashed border-slate-300">
+                                                Awaiting parameters…
+                                            </div>
+                                        ) : (
+                                            <div>
+                                                <div className="relative h-6 mb-1 px-1" aria-hidden="true">
+                                                    {Array.from({ length: totalTime + 1 }, (_, t) => (
+                                                        <div key={t} className="absolute top-0 bottom-0 flex flex-col items-center" style={{ left: `${(t / totalTime) * 100}%` }}>
+                                                            <span className={`${t % rulerStep === 0 ? 'h-2 w-px bg-slate-300' : 'h-1 w-px bg-slate-200'}`}></span>
+                                                            {t % rulerStep === 0 && (
+                                                                <span className="text-[9px] font-mono text-slate-400 mt-1">{t}</span>
+                                                            )}
+                                                        </div>
+                                                    ))}
+                                                </div>
+
+                                                <div className="relative">
+                                                    <div className="flex h-20 w-full rounded-2xl overflow-hidden border border-slate-200 relative bg-white">
+                                                        {simulation.gantt.map((block, i) => {
+                                                            const visibleEnd = Math.max(block.start, Math.min(block.end, playbackTime));
+                                                            const widthPct = ((visibleEnd - block.start) / totalTime) * 100;
+                                                            if (widthPct <= 0) return null;
+
+                                                            const isIdle = block.id === 'IDLE';
+                                                            const processIndex = isIdle ? -1 : processes.findIndex(p => p.id === block.id);
+                                                            const colorClass = isIdle ? 'bg-slate-100 text-slate-400 striped-bg' : COLORS[processIndex % COLORS.length];
+
+                                                            return (
+                                                                <div
+                                                                    key={i}
+                                                                    style={{ width: `${widthPct}%` }}
+                                                                    className={`${colorClass} h-full flex items-center justify-center border-r border-white/60 relative group transition-all duration-[600ms] ease-linear hover:opacity-90 cursor-help rounded-none`}
+                                                                >
+                                                                    <div className="absolute -top-10 left-1/2 transform -translate-x-1/2 bg-slate-900 text-white text-[10px] py-1 px-2 rounded-lg border border-slate-700 shadow-xl opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap pointer-events-none z-20">
+                                                                        {block.id} (Time: {block.start} – {block.end})
+                                                                    </div>
+                                                                    <span className={`font-bold text-sm ${isIdle ? 'text-slate-400' : 'text-white'} truncate px-1 drop-shadow`}>
+                                                                        {widthPct > 5 ? block.id : ''}
+                                                                    </span>
+                                                                </div>
+                                                            );
+                                                        })}
+
+                                                        {playbackTime > 0 && playbackTime < totalTime && (
+                                                            <div className="absolute inset-y-0 pointer-events-none" style={{ left: `${(playbackTime / totalTime) * 100}%` }} aria-hidden="true">
+                                                                <div className="w-[2px] h-full -translate-x-1/2" style={{ backgroundColor: theme.color, boxShadow: `0 0 8px ${theme.glow}` }}>
+                                                                    <div className="absolute -top-[5px] left-1/2 -translate-x-1/2 w-0 h-0 border-l-[5px] border-r-[5px] border-t-[6px] border-l-transparent border-r-transparent" style={{ borderTopColor: theme.color }}></div>
+                                                                </div>
+                                                            </div>
+                                                        )}
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        )}
+                                    </div>
+
+                                    {/* Results + the math */}
+                                    <div>
+                                        <div className="flex items-center gap-3 mb-4">
+                                            <StepBadge n={3} />
+                                            <div>
+                                                <h2 className="text-sm font-bold text-slate-900 leading-tight">Results & the Math</h2>
+                                                <p className="text-[11px] text-slate-400">Tap a card to see each calculation</p>
+                                            </div>
+                                        </div>
+
+                                        <div className="grid md:grid-cols-3 gap-4">
+                                            <MetricDrop
+                                                icon={<ICONS.trend />}
+                                                label="Avg Turnaround Time"
+                                                avg={avgTat}
+                                                formula="TAT = Completion - Arrival"
+                                                rows={metricRows.tat}
+                                                open={showTat}
+                                                onToggle={() => setShowTat(!showTat)}
+                                                theme={theme}
+                                            />
+                                            <MetricDrop
+                                                icon={<ICONS.clock />}
+                                                label="Avg Waiting Time"
+                                                avg={avgWt}
+                                                formula="WT = TAT - Burst"
+                                                rows={metricRows.wt}
+                                                open={showWt}
+                                                onToggle={() => setShowWt(!showWt)}
+                                                theme={theme}
+                                            />
+                                            <MetricDrop
+                                                icon={<ICONS.bolt />}
+                                                label="Avg Response Time"
+                                                avg={avgRt}
+                                                formula="RT = First start - Arrival"
+                                                rows={metricRows.rt}
+                                                open={showRt}
+                                                onToggle={() => setShowRt(!showRt)}
+                                                theme={theme}
+                                            />
+                                        </div>
+                                    </div>
+
+                                    {/* Event log */}
+                                    <div className="rounded-3xl border border-slate-200/70 bg-white shadow-sm p-5">
+                                        <div className="flex items-center justify-between mb-3">
+                                            <h3 className="text-xs font-semibold uppercase tracking-widest text-slate-400">What happened</h3>
+                                            <span className="text-[10px] font-mono text-slate-400">{visibleEvents.length} shown · {upcomingCount} upcoming</span>
+                                        </div>
+                                        {visibleEvents.length === 0 ? (
+                                            <div className="text-xs text-slate-400 text-center py-6 bg-slate-50 rounded-2xl">
+                                                Rewind the timeline to see scheduling events appear.
+                                            </div>
+                                        ) : (
+                                            <ol className="flex flex-wrap gap-1.5 max-h-[130px] overflow-y-auto slim-scroll pr-1">
+                                                {visibleEvents.map((e, idx) => (
+                                                    <li
+                                                        key={idx}
+                                                        className={`flex items-center gap-2 text-[11px] font-mono rounded-lg px-2.5 py-1.5 border ${
+                                                            idx === 0 ? 'border-slate-300 bg-slate-50 text-slate-700' : 'border-slate-200 bg-white text-slate-500'
+                                                        }`}
+                                                    >
+                                                        <span className="text-[10px] w-6 flex-shrink-0 text-right" style={{ color: theme.color }}>t={e.time}</span>
+                                                        <span className="flex-shrink-0">
+                                                            {e.kind === 'idle' && <span className="inline-block h-1.5 w-1.5 rounded-full bg-slate-300"></span>}
+                                                            {e.kind === 'start' && <span className="inline-block h-1.5 w-1.5 rounded-full bg-emerald-400"></span>}
+                                                            {e.kind === 'resume' && <span className="inline-block h-1.5 w-1.5 rounded-full" style={{ backgroundColor: theme.color }}></span>}
+                                                            {e.kind === 'preempt' && <span className="inline-block h-1.5 w-1.5 rounded-full bg-amber-400"></span>}
+                                                            {e.kind === 'done' && <span className="inline-block h-1.5 w-1.5 rounded-full bg-emerald-500"></span>}
+                                                        </span>
+                                                        <span>{e.text}</span>
+                                                    </li>
+                                                ))}
+                                            </ol>
+                                        )}
+                                    </div>
+                                </section>
+                            </div>
+                        </main>
+                    )}
+
+                    {/* ================= DYNAMIC COMPARISON VIEW ================= */}
+                    {view === 'compare' && (
+                        <main className="max-w-[1400px] mx-auto px-4 sm:px-6 py-6 flex flex-col gap-6">
+                            {/* ===== SECTION 1: DYNAMIC ALGORITHM PICKER & PRESETS ===== */}
+                            <section className="rounded-3xl border border-slate-200/70 bg-white shadow-sm p-6">
+                                <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 pb-5 border-b border-slate-100">
+                                    <div>
+                                        <div className="flex items-center gap-2.5">
+                                            <span className="h-9 w-9 rounded-2xl flex items-center justify-center text-white" style={{ backgroundColor: theme.color, boxShadow: `0 4px 12px ${theme.glow}` }}>
+                                                <ICONS.sparkle />
+                                            </span>
+                                            <div>
+                                                <h2 className="text-base font-bold text-slate-900 leading-tight">Dynamic Algorithm Selection</h2>
+                                                <p className="text-xs text-slate-400">Choose 2, 3, or more algorithms of your choice to analyze side-by-side</p>
+                                            </div>
+                                        </div>
+                                    </div>
+
+                                    {/* Selected counter and active processes */}
+                                    <div className="flex items-center gap-2">
+                                        <span className="text-xs font-bold px-3 py-1.5 rounded-xl border border-slate-200 bg-slate-50 text-slate-700">
+                                            {processes.length} Processes
+                                        </span>
+                                        <span className="text-xs font-bold px-3 py-1.5 rounded-xl text-white flex items-center gap-1.5" style={{ backgroundColor: theme.color, boxShadow: `0 2px 10px ${theme.glow}` }}>
+                                            <span>Comparing {comparedItems.length} Algorithms</span>
+                                        </span>
+                                    </div>
+                                </div>
+
+                                {/* Quick Presets (Choose 2, 3, 4, or All) */}
+                                <div className="mt-5">
+                                    <div className="flex items-center justify-between mb-2.5">
+                                        <span className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">Quick Presets:</span>
+                                        <span className="text-[11px] text-slate-400">Click any preset or toggle chips below</span>
+                                    </div>
+                                    <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2">
+                                        {COMPARISON_PRESETS.map(preset => {
+                                            const isCurrentPreset = preset.keys.length === comparedItems.length &&
+                                                preset.keys.every(k => comparedItems.some(i => i.catalogKey === k));
+                                            return (
+                                                <button
+                                                    key={preset.id}
+                                                    onClick={() => applyComparisonPreset(preset)}
+                                                    className={`px-3 py-2 rounded-xl text-left border transition-all duration-200 group ${
+                                                        isCurrentPreset
+                                                            ? 'border-indigo-500 bg-indigo-50/60 shadow-sm'
+                                                            : 'border-slate-200 bg-slate-50 hover:bg-white hover:border-slate-300'
+                                                    }`}
+                                                    style={isCurrentPreset ? { borderColor: theme.color, backgroundColor: `${theme.color}0D` } : undefined}
+                                                >
+                                                    <span className={`block text-xs font-bold truncate ${isCurrentPreset ? 'text-slate-900' : 'text-slate-700'}`}>
+                                                        {preset.label}
+                                                    </span>
+                                                    <span className="block text-[10px] text-slate-400 truncate mt-0.5">{preset.desc}</span>
+                                                </button>
+                                            );
+                                        })}
+                                    </div>
+                                </div>
+
+                                {/* Multi-Choice Algorithm Selector Chips */}
+                                <div className="mt-5 pt-5 border-t border-slate-100">
+                                    <div className="flex items-center justify-between mb-3">
+                                        <span className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">Select Algorithms of Your Choice:</span>
+                                        <span className="text-[11px] font-mono text-slate-400">Tip: Click to toggle on/off (min 2 required)</span>
+                                    </div>
+                                    <div className="grid sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-2.5">
+                                        {ALGORITHM_CATALOG.map(cat => {
+                                            const isSelected = comparedItems.some(item => item.catalogKey === cat.key);
+                                            return (
+                                                <button
+                                                    key={cat.key}
+                                                    onClick={() => toggleAlgorithmInComparison(cat)}
+                                                    className={`px-3.5 py-3 rounded-2xl border text-left transition-all duration-200 flex flex-col justify-between relative overflow-hidden ${
+                                                        isSelected
+                                                            ? 'shadow-md border-transparent text-white'
+                                                            : 'bg-white border-slate-200 text-slate-700 hover:border-slate-300 hover:bg-slate-50/70'
+                                                    }`}
+                                                    style={isSelected ? { backgroundColor: theme.color, boxShadow: `0 4px 14px ${theme.glow}` } : undefined}
+                                                >
+                                                    <div className="flex items-center justify-between w-full">
+                                                        <span className="font-bold text-sm tracking-tight">{cat.name}</span>
+                                                        <span className={`h-5 w-5 rounded-full flex items-center justify-center text-xs font-bold ${
+                                                            isSelected ? 'bg-white/20 text-white' : 'border border-slate-300 text-transparent'
+                                                        }`}>
+                                                            {isSelected ? '✓' : ''}
+                                                        </span>
+                                                    </div>
+                                                    <span className={`text-[10px] mt-2 block truncate ${isSelected ? 'text-white/80' : 'text-slate-400'}`}>
+                                                        {cat.type}
+                                                    </span>
+                                                </button>
+                                            );
+                                        })}
+                                    </div>
+                                </div>
+
+                                {/* Custom Variant Add Option (e.g. Compare RR q=2 vs RR q=4) */}
+                                <div className="mt-4 pt-3 flex items-center justify-between flex-wrap gap-2 text-xs text-slate-500 bg-slate-50 px-3.5 py-2.5 rounded-2xl border border-slate-200">
+                                    <span className="font-medium flex items-center gap-1.5">
+                                        <span className="h-2 w-2 rounded-full" style={{ backgroundColor: theme.color }}></span>
+                                        Want to test multiple instances? (e.g. Round Robin with different quantums):
+                                    </span>
+                                    <div className="flex items-center gap-1.5">
+                                        <button
+                                            onClick={() => addAlgorithmVariant('rr')}
+                                            className="px-2.5 py-1 rounded-lg bg-white border border-slate-300 hover:border-slate-400 font-semibold text-slate-700 transition-all hover:shadow-sm"
+                                        >
+                                            + Add Another Round Robin
+                                        </button>
+                                        <button
+                                            onClick={() => addAlgorithmVariant('priority_p')}
+                                            className="px-2.5 py-1 rounded-lg bg-white border border-slate-300 hover:border-slate-400 font-semibold text-slate-700 transition-all hover:shadow-sm"
+                                        >
+                                            + Add Preemptive Priority
+                                        </button>
+                                    </div>
+                                </div>
+                            </section>
+
+                            {/* ===== SECTION 2: WINNERS & PERFORMANCE INSIGHTS PODIUM ===== */}
+                            {dynamicCompareRows.length >= 2 && (
+                                <section aria-label="Winner insights" className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                                    {/* Best Waiting Time */}
+                                    <div className="rounded-3xl border border-emerald-200 bg-emerald-50/40 p-5 shadow-sm">
+                                        <div className="flex items-center justify-between mb-2">
+                                            <span className="text-[11px] font-bold uppercase tracking-wider text-emerald-700 flex items-center gap-1.5">
+                                                <span className="w-4 h-4"><ICONS.trophy /></span>
+                                                Lowest Waiting Time (Winner)
+                                            </span>
+                                            <span className="text-xs font-mono font-bold bg-emerald-100 text-emerald-800 px-2 py-0.5 rounded-lg">
+                                                {bestWt} ms
+                                            </span>
+                                        </div>
+                                        <p className="text-lg font-bold text-slate-900 leading-tight">
+                                            {winnerWt ? winnerWt.label : 'N/A'}
+                                            {winnerWt && winnerWt.configLabel ? <span className="text-xs font-normal text-slate-500 ml-1.5">({winnerWt.configLabel})</span> : ''}
+                                        </p>
+                                        <p className="text-xs text-slate-500 mt-1">
+                                            Minimizes total process wait queue time for current arrival burst distribution.
+                                        </p>
+                                    </div>
+
+                                    {/* Best Turnaround Time */}
+                                    <div className="rounded-3xl border border-indigo-200 bg-indigo-50/40 p-5 shadow-sm">
+                                        <div className="flex items-center justify-between mb-2">
+                                            <span className="text-[11px] font-bold uppercase tracking-wider text-indigo-700 flex items-center gap-1.5">
+                                                <span className="w-4 h-4"><ICONS.trend /></span>
+                                                Lowest Turnaround Time
+                                            </span>
+                                            <span className="text-xs font-mono font-bold bg-indigo-100 text-indigo-800 px-2 py-0.5 rounded-lg">
+                                                {bestTat} ms
+                                            </span>
+                                        </div>
+                                        <p className="text-lg font-bold text-slate-900 leading-tight">
+                                            {winnerTat ? winnerTat.label : 'N/A'}
+                                            {winnerTat && winnerTat.configLabel ? <span className="text-xs font-normal text-slate-500 ml-1.5">({winnerTat.configLabel})</span> : ''}
+                                        </p>
+                                        <p className="text-xs text-slate-500 mt-1">
+                                            Fastest average total cycle time from process arrival to final completion.
+                                        </p>
+                                    </div>
+
+                                    {/* Best Response Time */}
+                                    <div className="rounded-3xl border border-violet-200 bg-violet-50/40 p-5 shadow-sm">
+                                        <div className="flex items-center justify-between mb-2">
+                                            <span className="text-[11px] font-bold uppercase tracking-wider text-violet-700 flex items-center gap-1.5">
+                                                <span className="w-4 h-4"><ICONS.bolt /></span>
+                                                Fastest Response Time
+                                            </span>
+                                            <span className="text-xs font-mono font-bold bg-violet-100 text-violet-800 px-2 py-0.5 rounded-lg">
+                                                {bestRt} ms
+                                            </span>
+                                        </div>
+                                        <p className="text-lg font-bold text-slate-900 leading-tight">
+                                            {winnerRt ? winnerRt.label : 'N/A'}
+                                            {winnerRt && winnerRt.configLabel ? <span className="text-xs font-normal text-slate-500 ml-1.5">({winnerRt.configLabel})</span> : ''}
+                                        </p>
+                                        <p className="text-xs text-slate-500 mt-1">
+                                            Ideal for interactive UI responsiveness; processes begin execution earliest.
+                                        </p>
+                                    </div>
+                                </section>
+                            )}
+
+                            {/* ===== SECTION 3: COMPARISON VIEWS (TABLE, VISUAL BARS, TIMELINES) ===== */}
+                            <section className="rounded-3xl border border-slate-200/70 bg-white shadow-sm p-6">
+                                <div className="flex items-center justify-between gap-4 mb-6 flex-wrap">
+                                    <div>
+                                        <h3 className="text-sm font-bold text-slate-900">Comparative Analysis Results</h3>
+                                        <p className="text-xs text-slate-400">Comparing performance metrics for your {dynamicCompareRows.length} chosen algorithms</p>
+                                    </div>
+
+                                    {/* Sub-view switcher */}
+                                    <div className="flex gap-1 p-1 rounded-xl bg-slate-100 border border-slate-200 text-xs font-semibold">
+                                        <button
+                                            onClick={() => setCompareSubView('table')}
+                                            className={`px-3 py-1.5 rounded-lg flex items-center gap-1.5 transition-all ${
+                                                compareSubView === 'table' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-800'
+                                            }`}
+                                        >
+                                            <span className="w-3.5 h-3.5"><ICONS.table /></span> Table View
+                                        </button>
+                                        <button
+                                            onClick={() => setCompareSubView('bars')}
+                                            className={`px-3 py-1.5 rounded-lg flex items-center gap-1.5 transition-all ${
+                                                compareSubView === 'bars' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-800'
+                                            }`}
+                                        >
+                                            <span className="w-3.5 h-3.5"><ICONS.bars /></span> Metric Bars
+                                        </button>
+                                        <button
+                                            onClick={() => setCompareSubView('timelines')}
+                                            className={`px-3 py-1.5 rounded-lg flex items-center gap-1.5 transition-all ${
+                                                compareSubView === 'timelines' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-800'
+                                            }`}
+                                        >
+                                            <span className="w-3.5 h-3.5"><ICONS.layers /></span> Stacked Timelines
+                                        </button>
+                                    </div>
+                                </div>
+
+                                {/* --- SUB-VIEW 1: DETAILED TABLE --- */}
+                                {compareSubView === 'table' && (
+                                    <div className="overflow-x-auto">
+                                        <table className="w-full text-left text-sm">
+                                            <thead className="text-slate-400 text-xs uppercase tracking-wider border-b border-slate-200 bg-slate-50/50">
+                                                <tr>
+                                                    <th scope="col" className="px-4 py-3.5 font-semibold">Algorithm & Parameters</th>
+                                                    <th scope="col" className="px-4 py-3.5 font-semibold">Type</th>
+                                                    <th scope="col" className="px-4 py-3.5 font-semibold">Total Time</th>
+                                                    <th scope="col" className="px-4 py-3.5 font-semibold">Avg TAT</th>
+                                                    <th scope="col" className="px-4 py-3.5 font-semibold">Avg WT</th>
+                                                    <th scope="col" className="px-4 py-3.5 font-semibold">Avg RT</th>
+                                                    <th scope="col" className="px-4 py-3.5 font-semibold">CPU Util</th>
+                                                    <th scope="col" className="px-4 py-3.5 font-semibold">Gantt Preview</th>
+                                                    <th scope="col" className="px-4 py-3.5 font-semibold text-right">Actions</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody className="divide-y divide-slate-100">
+                                                {dynamicCompareRows.map((r) => {
+                                                    const isBestTat = parseFloat(r.avgTat) === bestTat;
+                                                    const isBestWt = parseFloat(r.avgWt) === bestWt;
+                                                    const isBestRt = parseFloat(r.avgRt) === bestRt;
+
+                                                    return (
+                                                        <tr key={r.instanceId} className="hover:bg-slate-50/70 transition-colors">
+                                                            <td className="px-4 py-3.5">
+                                                                <div className="font-bold text-slate-900">{r.label}</div>
+                                                                {/* Quantum inline selector for Round Robin */}
+                                                                {r.algoId === 'rr' && (
+                                                                    <div className="mt-1 flex items-center gap-1">
+                                                                        <span className="text-[10px] text-slate-400">Quantum:</span>
+                                                                        {QUANTUM_OPTIONS.map(q => (
+                                                                            <button
+                                                                                key={q}
+                                                                                onClick={() => updateComparisonItemProp(r.instanceId, 'quantum', q)}
+                                                                                className={`px-1.5 py-0.5 text-[10px] rounded font-mono font-bold transition-all ${
+                                                                                    (r.quantum || 2) === q
+                                                                                        ? 'bg-indigo-600 text-white'
+                                                                                        : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                                                                                }`}
+                                                                                style={(r.quantum || 2) === q ? { backgroundColor: theme.color } : undefined}
+                                                                            >
+                                                                                {q}
+                                                                            </button>
+                                                                        ))}
+                                                                    </div>
+                                                                )}
+                                                                {/* Mode toggle for Priority */}
+                                                                {r.algoId === 'priority' && (
+                                                                    <div className="mt-1 flex items-center gap-1">
+                                                                        <button
+                                                                            onClick={() => updateComparisonItemProp(r.instanceId, 'priorityMode', r.priorityMode === 'p' ? 'np' : 'p')}
+                                                                            className="text-[10px] px-2 py-0.5 rounded font-semibold bg-slate-100 text-slate-600 hover:bg-slate-200"
+                                                                        >
+                                                                            Mode: {r.priorityMode === 'p' ? 'Preemptive ⇄ NP' : 'Non-preemptive ⇄ P'}
+                                                                        </button>
+                                                                    </div>
+                                                                )}
+                                                            </td>
+                                                            <td className="px-4 py-3.5">
+                                                                <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full uppercase tracking-wider ${
+                                                                    r.type === 'Preemptive' ? 'bg-violet-100 text-violet-700' : 'bg-sky-100 text-sky-700'
+                                                                }`}>
+                                                                    {r.type}
+                                                                </span>
+                                                            </td>
+                                                            <td className="px-4 py-3.5 font-mono text-slate-600">{r.total} ms</td>
+                                                            <td className={`px-4 py-3.5 font-mono font-bold ${isBestTat ? 'text-emerald-600 bg-emerald-50/50' : 'text-slate-700'}`}>
+                                                                <div className="flex items-center gap-1">
+                                                                    <span>{r.avgTat}</span>
+                                                                    {isBestTat && <span className="text-[10px] bg-emerald-100 text-emerald-800 px-1 rounded font-bold">★ BEST</span>}
+                                                                </div>
+                                                            </td>
+                                                            <td className={`px-4 py-3.5 font-mono font-bold ${isBestWt ? 'text-emerald-600 bg-emerald-50/50' : 'text-slate-700'}`}>
+                                                                <div className="flex items-center gap-1">
+                                                                    <span>{r.avgWt}</span>
+                                                                    {isBestWt && <span className="text-[10px] bg-emerald-100 text-emerald-800 px-1 rounded font-bold">★ BEST</span>}
+                                                                </div>
+                                                            </td>
+                                                            <td className={`px-4 py-3.5 font-mono font-bold ${isBestRt ? 'text-emerald-600 bg-emerald-50/50' : 'text-slate-700'}`}>
+                                                                <div className="flex items-center gap-1">
+                                                                    <span>{r.avgRt}</span>
+                                                                    {isBestRt && <span className="text-[10px] bg-emerald-100 text-emerald-800 px-1 rounded font-bold">★ BEST</span>}
+                                                                </div>
+                                                            </td>
+                                                            <td className="px-4 py-3.5">
+                                                                <div className="flex items-center gap-2">
+                                                                    <div className="w-12 h-2 rounded-full bg-slate-100 overflow-hidden">
+                                                                        <div className="h-full rounded-full" style={{ width: `${r.util}%`, backgroundColor: theme.color }}></div>
+                                                                    </div>
+                                                                    <span className="text-[11px] font-mono text-slate-500">{r.util}%</span>
+                                                                </div>
+                                                            </td>
+                                                            <td className="px-4 py-3.5">
+                                                                <div className="flex h-3.5 w-40 rounded-full overflow-hidden bg-slate-100 border border-slate-200/50">
+                                                                    {r.sim.gantt.map((b, i) => {
+                                                                        const w = ((b.end - b.start) / Math.max(1, r.total)) * 100;
+                                                                        const isIdle = b.id === 'IDLE';
+                                                                        const idx = isIdle ? -1 : processes.findIndex(p => p.id === b.id);
+                                                                        return (
+                                                                            <div
+                                                                                key={i}
+                                                                                title={`${b.id}: ${b.start}-${b.end}`}
+                                                                                className={isIdle ? 'bg-slate-200' : ''}
+                                                                                style={{ width: `${w}%`, backgroundColor: isIdle ? undefined : COLOR_HEX[idx % COLOR_HEX.length] }}
+                                                                            ></div>
+                                                                        );
+                                                                    })}
+                                                                </div>
+                                                            </td>
+                                                            <td className="px-4 py-3.5 text-right">
+                                                                <div className="flex items-center justify-end gap-1.5">
+                                                                    <button
+                                                                        onClick={() => switchToSimulatorWithAlgo(r)}
+                                                                        title="Load and simulate this algorithm in the timeline player"
+                                                                        className="text-xs font-semibold px-2.5 py-1 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 transition-colors"
+                                                                    >
+                                                                        Simulate
+                                                                    </button>
+                                                                    <button
+                                                                        onClick={() => removeComparisonItem(r.instanceId)}
+                                                                        disabled={dynamicCompareRows.length <= 2}
+                                                                        title={dynamicCompareRows.length <= 2 ? "Minimum 2 algorithms required" : "Remove from comparison"}
+                                                                        className="p-1 rounded-lg text-slate-300 hover:text-rose-500 hover:bg-rose-50 disabled:opacity-30 disabled:hover:text-slate-300 disabled:hover:bg-transparent transition-colors"
+                                                                    >
+                                                                        <ICONS.trash />
+                                                                    </button>
+                                                                </div>
+                                                            </td>
+                                                        </tr>
+                                                    );
+                                                })}
+                                            </tbody>
+                                        </table>
+                                    </div>
+                                )}
+
+                                {/* --- SUB-VIEW 2: VISUAL METRIC COMPARISON BARS --- */}
+                                {compareSubView === 'bars' && (
+                                    <div className="flex flex-col gap-6 py-2">
+                                        {/* Waiting Time Comparison Bars */}
+                                        <div className="rounded-2xl border border-slate-200/80 p-5 bg-slate-50/50">
+                                            <div className="flex items-center justify-between mb-3">
+                                                <h4 className="text-xs font-bold uppercase tracking-wider text-slate-700 flex items-center gap-1.5">
+                                                    <span className="w-4 h-4 text-emerald-600"><ICONS.clock /></span>
+                                                    Average Waiting Time (Lower is Better)
+                                                </h4>
+                                                <span className="text-xs font-mono text-slate-400">Best: {bestWt} ms</span>
+                                            </div>
+                                            <div className="flex flex-col gap-2.5">
+                                                {dynamicCompareRows.map(r => {
+                                                    const val = parseFloat(r.avgWt);
+                                                    const pct = Math.max(8, (val / maxWt) * 100);
+                                                    const isWinner = val === bestWt;
+                                                    return (
+                                                        <div key={r.instanceId} className="flex items-center gap-3">
+                                                            <div className="w-36 text-xs font-bold text-slate-800 truncate" title={r.label}>
+                                                                {r.label}
+                                                            </div>
+                                                            <div className="flex-1 h-6 rounded-xl bg-slate-200/60 overflow-hidden flex items-center p-0.5">
+                                                                <div
+                                                                    className={`h-full rounded-lg transition-all duration-500 flex items-center justify-end pr-2 text-[10px] font-bold text-white ${
+                                                                        isWinner ? 'bg-emerald-500 shadow-sm' : 'bg-slate-400'
+                                                                    }`}
+                                                                    style={{ width: `${pct}%`, backgroundColor: isWinner ? undefined : theme.color }}
+                                                                >
+                                                                    {val} ms
+                                                                </div>
+                                                            </div>
+                                                            <span className="w-16 text-right text-xs font-mono font-bold text-slate-700">
+                                                                {val} ms {isWinner && <span className="text-emerald-500">★</span>}
+                                                            </span>
+                                                        </div>
+                                                    );
+                                                })}
+                                            </div>
+                                        </div>
+
+                                        {/* Turnaround Time Comparison Bars */}
+                                        <div className="rounded-2xl border border-slate-200/80 p-5 bg-slate-50/50">
+                                            <div className="flex items-center justify-between mb-3">
+                                                <h4 className="text-xs font-bold uppercase tracking-wider text-slate-700 flex items-center gap-1.5">
+                                                    <span className="w-4 h-4 text-indigo-600"><ICONS.trend /></span>
+                                                    Average Turnaround Time (Lower is Better)
+                                                </h4>
+                                                <span className="text-xs font-mono text-slate-400">Best: {bestTat} ms</span>
+                                            </div>
+                                            <div className="flex flex-col gap-2.5">
+                                                {dynamicCompareRows.map(r => {
+                                                    const val = parseFloat(r.avgTat);
+                                                    const pct = Math.max(8, (val / maxTat) * 100);
+                                                    const isWinner = val === bestTat;
+                                                    return (
+                                                        <div key={r.instanceId} className="flex items-center gap-3">
+                                                            <div className="w-36 text-xs font-bold text-slate-800 truncate" title={r.label}>
+                                                                {r.label}
+                                                            </div>
+                                                            <div className="flex-1 h-6 rounded-xl bg-slate-200/60 overflow-hidden flex items-center p-0.5">
+                                                                <div
+                                                                    className={`h-full rounded-lg transition-all duration-500 flex items-center justify-end pr-2 text-[10px] font-bold text-white ${
+                                                                        isWinner ? 'bg-emerald-500 shadow-sm' : 'bg-slate-400'
+                                                                    }`}
+                                                                    style={{ width: `${pct}%`, backgroundColor: isWinner ? undefined : theme.color }}
+                                                                >
+                                                                    {val} ms
+                                                                </div>
+                                                            </div>
+                                                            <span className="w-16 text-right text-xs font-mono font-bold text-slate-700">
+                                                                {val} ms {isWinner && <span className="text-emerald-500">★</span>}
+                                                            </span>
+                                                        </div>
+                                                    );
+                                                })}
+                                            </div>
+                                        </div>
+
+                                        {/* Response Time Comparison Bars */}
+                                        <div className="rounded-2xl border border-slate-200/80 p-5 bg-slate-50/50">
+                                            <div className="flex items-center justify-between mb-3">
+                                                <h4 className="text-xs font-bold uppercase tracking-wider text-slate-700 flex items-center gap-1.5">
+                                                    <span className="w-4 h-4 text-violet-600"><ICONS.bolt /></span>
+                                                    Average Response Time (Lower is Better)
+                                                </h4>
+                                                <span className="text-xs font-mono text-slate-400">Best: {bestRt} ms</span>
+                                            </div>
+                                            <div className="flex flex-col gap-2.5">
+                                                {dynamicCompareRows.map(r => {
+                                                    const val = parseFloat(r.avgRt);
+                                                    const pct = Math.max(8, (val / maxRt) * 100);
+                                                    const isWinner = val === bestRt;
+                                                    return (
+                                                        <div key={r.instanceId} className="flex items-center gap-3">
+                                                            <div className="w-36 text-xs font-bold text-slate-800 truncate" title={r.label}>
+                                                                {r.label}
+                                                            </div>
+                                                            <div className="flex-1 h-6 rounded-xl bg-slate-200/60 overflow-hidden flex items-center p-0.5">
+                                                                <div
+                                                                    className={`h-full rounded-lg transition-all duration-500 flex items-center justify-end pr-2 text-[10px] font-bold text-white ${
+                                                                        isWinner ? 'bg-emerald-500 shadow-sm' : 'bg-slate-400'
+                                                                    }`}
+                                                                    style={{ width: `${pct}%`, backgroundColor: isWinner ? undefined : theme.color }}
+                                                                >
+                                                                    {val} ms
+                                                                </div>
+                                                            </div>
+                                                            <span className="w-16 text-right text-xs font-mono font-bold text-slate-700">
+                                                                {val} ms {isWinner && <span className="text-emerald-500">★</span>}
+                                                            </span>
+                                                        </div>
+                                                    );
+                                                })}
+                                            </div>
+                                        </div>
+                                    </div>
+                                )}
+
+                                {/* --- SUB-VIEW 3: STACKED TIMELINES (ALIGNED GANTT) --- */}
+                                {compareSubView === 'timelines' && (
+                                    <div className="flex flex-col gap-5 py-2">
+                                        <p className="text-xs text-slate-500">
+                                            All chosen algorithms aligned on the exact same timeline scale (0 to {maxTimelineInCompare} ms) to easily compare context switching, preemption points, and scheduling order.
+                                        </p>
+
+                                        {/* Ruler */}
+                                        <div className="relative h-6 pl-40 pr-4" aria-hidden="true">
+                                            {Array.from({ length: maxTimelineInCompare + 1 }, (_, t) => (
+                                                <div key={t} className="absolute top-0 bottom-0 flex flex-col items-center" style={{ left: `calc(160px + ${(t / maxTimelineInCompare) * 100} * (100% - 176px) / 100)` }}>
+                                                    <span className={`${t % 2 === 0 ? 'h-2.5 w-px bg-slate-400' : 'h-1.5 w-px bg-slate-200'}`}></span>
+                                                    {t % 2 === 0 && <span className="text-[9px] font-mono text-slate-400 mt-1">{t}</span>}
+                                                </div>
+                                            ))}
+                                        </div>
+
+                                        {/* Timelines */}
+                                        <div className="flex flex-col gap-3">
+                                            {dynamicCompareRows.map(r => (
+                                                <div key={r.instanceId} className="flex items-center gap-3">
+                                                    <div className="w-40 flex-shrink-0">
+                                                        <span className="block text-xs font-bold text-slate-800 truncate">{r.label}</span>
+                                                        <span className="block text-[10px] text-slate-400 truncate">Total: {r.total}ms · WT: {r.avgWt}ms</span>
+                                                    </div>
+                                                    <div className="flex-1 h-9 rounded-xl overflow-hidden border border-slate-200 bg-white flex relative">
+                                                        {r.sim.gantt.map((block, i) => {
+                                                            const w = ((block.end - block.start) / maxTimelineInCompare) * 100;
+                                                            const isIdle = block.id === 'IDLE';
+                                                            const pIdx = isIdle ? -1 : processes.findIndex(p => p.id === block.id);
+                                                            return (
+                                                                <div
+                                                                    key={i}
+                                                                    style={{ width: `${w}%` }}
+                                                                    title={`${block.id}: ${block.start} - ${block.end} ms`}
+                                                                    className={`h-full flex items-center justify-center border-r border-white/60 relative group text-xs font-bold text-white transition-opacity hover:opacity-85 ${
+                                                                        isIdle ? 'bg-slate-200 text-slate-500 striped-bg' : COLORS[pIdx % COLORS.length]
+                                                                    }`}
+                                                                >
+                                                                    <span className="truncate px-1 drop-shadow text-[11px]">{w > 6 ? block.id : ''}</span>
+                                                                </div>
+                                                            );
+                                                        })}
+                                                    </div>
+                                                </div>
+                                            ))}
+                                        </div>
+                                    </div>
+                                )}
+
+                                <p className="mt-5 text-[11px] text-slate-400 flex items-center gap-1.5">
+                                    <span className="font-bold text-emerald-600">★ BEST</span> marks the optimal performance for that metric among all your selected algorithms.
+                                </p>
+                            </section>
+                        </main>
+                    )}
+
+                    {/* ================= FOOTER ================= */}
+                    <footer className="max-w-[1400px] mx-auto px-4 sm:px-6 pt-6 text-center text-[11px] text-slate-400">
+                        Process Engine — CPU Scheduling Playground with Dynamic Algorithm Comparison. Pick 2, 3, or more algorithms of your choice!
+                    </footer>
+                </div>
+            );
+        }
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<SchedulingSimulation />);
+    </script>
+</body>
+</html>
